@@ -11,6 +11,7 @@ from .agents.registry import agent_registry
 from .memory.orchestrator import get_memory_orchestrator
 from .orchestration.event_bus import event_bus
 from .llmops.telemetry import get_telemetry_exporter
+from .messaging import get_message_broker, initialize_broker, shutdown_broker
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ class XenoSysApp:
         # Initialize event bus
         await event_bus.start()
         
+        # Initialize message broker
+        broker_config = self.config.get("messaging", {})
+        broker_backend = broker_config.get("backend", "memory")
+        await initialize_broker(broker_backend, **broker_config)
+        
         # Initialize memory orchestrator
         memory = get_memory_orchestrator()
         await memory.initialize()
@@ -49,6 +55,9 @@ class XenoSysApp:
         logger.info("Stopping XenoSys...")
         
         self._running = False
+        
+        # Stop message broker
+        await shutdown_broker()
         
         # Stop event bus
         await event_bus.stop()
