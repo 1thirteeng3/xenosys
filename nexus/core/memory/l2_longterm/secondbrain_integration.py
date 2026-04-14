@@ -1,10 +1,10 @@
 """
 XenoSys Memory System - L2 Long-term Memory (2ndBrain)
-Built on Obsidian for user materials and notes via REST API.
+Built on Obsidian for user materials and notes via MCP SSE transport.
 
 Obsidian: https://obsidian.md
 The user's second brain - personal knowledge management.
-Note: Uses Obsidian Local REST API plugin for HTTP access.
+Note: Uses MCP (Model Context Protocol) with SSE for remote HTTP transport.
 """
 
 from __future__ import annotations
@@ -15,9 +15,97 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-import httpx
-
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# MCP SSE Client for Obsidian
+# ============================================================================
+
+class ObsidianMCPClient:
+    """
+    MCP Client for Obsidian vault operations via SSE transport.
+    
+    Uses Server-Sent Events (SSE) for stateless remote communication.
+    This replaces the old Stdio-based transport with HTTP-based SSE.
+    """
+
+    def __init__(self, mcp_server_url: str):
+        """
+        Initialize MCP client with SSE transport.
+        
+        Args:
+            mcp_server_url: URL of the MCP server (e.g., http://localhost:3000/sse)
+        """
+        self.server_url = mcp_server_url
+        self._exit_stack: Optional[Any] = None
+        self.session: Optional[Any] = None
+        self._connected = False
+    
+    async def connect(self) -> bool:
+        """
+        Establishes a stateless connection via Server-Sent Events (SSE).
+        """
+        try:
+            from mcp import ClientSession
+            from mcp.client.sse import sse_client
+            import contextlib
+            
+            # Manages the transport and session lifecycle
+            self._exit_stack = contextlib.AsyncExitStack()
+            
+            # Create SSE transport
+            sse_transport = await self._exit_stack.enter_async_context(
+                sse_client(self.server_url)
+            )
+            
+            # Create client session
+            self.session = await self._exit_stack.enter_async_context(
+                ClientSession(sse_transport[0], sse_transport[1])
+            )
+            
+            await self.session.initialize()
+            self._connected = True
+            
+            logger.info(f"Connected to Obsidian MCP via SSE: {self.server_url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to connect via SSE to MCP Server: {e}")
+            raise ConnectionError(f"Failed to connect via SSE to MCP Server: {e}")
+    
+    async def disconnect(self) -> None:
+        """Disconnect and clean up resources."""
+        if self._exit_stack:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+            self.session = None
+            self._connected = False
+            logger.info("Disconnected from Obsidian MCP")
+    
+    async def list_tools(self) -> List[Dict[str, Any]]:
+        """List available MCP tools."""
+        if not self.session:
+            return []
+        
+        try:
+            result = await self.session.list_tools()
+            return result.tools if hasattr(result, 'tools') else []
+        except Exception as e:
+            logger.error(f"Failed to list tools: {e}")
+            return []
+    
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Call an MCP tool."""
+        if not self.session:
+            raise RuntimeError("Not connected to MCP server")
+        
+        try:
+            result = await self.session.call_tool(tool_name, arguments)
+            return result
+        except Exception as e:
+            logger.error(f"Failed to call tool {tool_name}: {e}")
+            raise
 
 
 # ============================================================================
@@ -47,301 +135,33 @@ class NoteSearchResult:
 
 
 # ============================================================================
-# Obsidian REST API Client
-# ============================================================================
-
-class ObsidianClient:
-    """
-    Client for Obsidian vault operations via REST API.
-    
-    Requires Obsidian Local REST API plugin running on a server.
-    Provides:
-    - Note CRUD operations via HTTP
-    - Folder management
-    - YAML frontmatter parsing
-    - Wiki-link resolution
-    - Tag-based organization
-    """
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or {}
-        self.endpoint = self.config.get("endpoint", "http://localhost:8080")
-        self.api_key = self.config.get("api_key", "")
-        self.vault_name = self.config.get("vault_name", "xenosys")
-        self.timeout = httpx.Timeout(self.config.get("timeout", 30.0))
-        self._client: Optional[httpx.AsyncClient] = None
-    
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
-        if self._client is None:
-            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-            self._client = httpx.AsyncClient(
-                base_url=self.endpoint,
-                timeout=self.timeout,
-                headers=headers,
-            )
-        return self._client
-    
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-    
-    async def connect(self) -> bool:
-        """Verify connection to Obsidian API."""
-        try:
-            client = await self._get_client()
-            response = await client.get(f"/vaults/{self.vault_name}/health")
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Failed to connect to Obsidian: {e}")
-            return False
-    
-    async def create_note(
-        self,
-        title: str,
-        content: str = "",
-        folder: str = "notes",
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Note:
-        """Create a new note via HTTP."""
-        import yaml
-        
-        # Build frontmatter
-        frontmatter = {
-            "title": title,
-            "created": datetime.utcnow().isoformat(),
-            "modified": datetime.utcnow().isoformat(),
-            "tags": tags or [],
-        }
-        if metadata:
-            frontmatter.update(metadata)
-        
-        fm_yaml = yaml.dump(frontmatter, default_flow_style=False)
-        full_content = f"---\n{fm_yaml}---\n\n{content}"
-        
-        # Generate filename
-        filename = self._sanitize_filename(title) + ".md"
-        file_path = f"{folder}/{filename}"
-        
-        try:
-            client = await self._get_client()
-            response = await client.put(
-                f"/vaults/{self.vault_name}/files/{file_path}",
-                json={"content": full_content}
-            )
-            
-            if response.status_code in (200, 201):
-                return Note(
-                    id=uuid4(),
-                    title=title,
-                    content=content,
-                    path=file_path,
-                    tags=tags or [],
-                    frontmatter=frontmatter,
-                )
-            raise Exception(f"Failed to create note: {response.status_code}")
-            
-        except Exception as e:
-            logger.error(f"Failed to create note: {e}")
-            raise
-    
-    async def get_note(self, path: str) -> Optional[Note]:
-        """Read a note from the vault via HTTP."""
-        try:
-            client = await self._get_client()
-            response = await client.get(f"/vaults/{self.vault_name}/files/{path}")
-            
-            if response.status_code != 200:
-                return None
-            
-            content = response.json().get("content", "")
-            frontmatter, body = self._parse_frontmatter(content)
-            
-            title = frontmatter.get("title", path.split("/")[-1].replace(".md", ""))
-            tags = frontmatter.get("tags", [])
-            
-            return Note(
-                id=uuid4(),
-                title=title,
-                content=body,
-                path=path,
-                tags=tags,
-                frontmatter=frontmatter,
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to get note: {e}")
-            return None
-    
-    async def update_note(
-        self,
-        path: str,
-        content: Optional[str] = None,
-        title: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> Optional[Note]:
-        """Update an existing note."""
-        note = await self.get_note(path)
-        if not note:
-            return None
-        
-        if content is not None:
-            note.content = content
-        if title is not None:
-            note.title = title
-        if tags is not None:
-            note.tags = tags
-        
-        note.modified_at = datetime.utcnow()
-        note.frontmatter["modified"] = note.modified_at.isoformat()
-        
-        return await self.create_note(
-            title=note.title,
-            content=note.content,
-            folder=path.split("/")[0] if "/" in path else "notes",
-            tags=note.tags,
-            metadata=note.frontmatter,
-        )
-    
-    async def delete_note(self, path: str) -> bool:
-        """Delete a note via HTTP."""
-        try:
-            client = await self._get_client()
-            response = await client.delete(f"/vaults/{self.vault_name}/files/{path}")
-            return response.status_code in (200, 204)
-        except Exception as e:
-            logger.error(f"Failed to delete note: {e}")
-            return False
-    
-    async def search_notes(
-        self,
-        query: str,
-        tags: Optional[List[str]] = None,
-        folder: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[NoteSearchResult]:
-        """Search notes via HTTP."""
-        try:
-            client = await self._get_client()
-            response = await client.post(
-                f"/vaults/{self.vault_name}/search",
-                json={
-                    "query": query,
-                    "tags": tags,
-                    "folder": folder,
-                    "limit": limit
-                }
-            )
-            
-            if response.status_code != 200:
-                return []
-            
-            results = []
-            for item in response.json().get("results", []):
-                note = Note(
-                    id=uuid4(),
-                    title=item.get("title", ""),
-                    content=item.get("content", ""),
-                    path=item.get("path", ""),
-                    tags=item.get("tags", []),
-                )
-                results.append(NoteSearchResult(note=note, score=item.get("score", 0.0)))
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            return []
-    
-    async def list_notes(
-        self,
-        folder: str = "notes",
-    ) -> List[str]:
-        """List note paths in a folder."""
-        try:
-            client = await self._get_client()
-            response = await client.get(f"/vaults/{self.vault_name}/files/{folder}")
-            
-            if response.status_code != 200:
-                return []
-            
-            return response.json().get("files", [])
-            
-        except Exception as e:
-            logger.error(f"Failed to list notes: {e}")
-            return []
-    
-    async def get_tags(self) -> List[str]:
-        """Get all unique tags in the vault."""
-        try:
-            client = await self._get_client()
-            response = await client.get(f"/vaults/{self.vault_name}/tags")
-            
-            if response.status_code == 200:
-                return response.json().get("tags", [])
-            return []
-            
-        except Exception as e:
-            logger.error(f"Failed to get tags: {e}")
-            return []
-    
-    def _sanitize_filename(self, title: str) -> str:
-        """Convert title to safe filename."""
-        import re
-        filename = re.sub(r'[<>:"/\\|?*]', '', title)
-        filename = filename.replace(' ', '_')
-        return filename[:200]
-    
-    def _parse_frontmatter(self, content: str) -> tuple[Dict[str, Any], str]:
-        """Parse YAML frontmatter from note."""
-        import yaml
-        
-        if not content.startswith("---"):
-            return {}, content
-        
-        try:
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                frontmatter = yaml.safe_load(parts[1]) or {}
-                body = parts[2].strip()
-                return frontmatter, body
-        except Exception as e:
-            logger.warning(f"Failed to parse frontmatter: {e}")
-        
-        return {}, content
-
-
-# ============================================================================
-# 2ndBrain Long-term Memory Store
+# 2ndBrain Store with MCP SSE
 # ============================================================================
 
 class SecondBrainStore:
     """
-    L2 Long-term Memory store using Obsidian via HTTP.
+    L2 Long-term Memory store using Obsidian via MCP SSE.
     
     Provides:
-    - Personal knowledge management via REST API
+    - Personal knowledge management via MCP protocol
     - Note-taking with wiki-links
     - Tag-based organization
     - Full-text search
     """
-    
+
     def __init__(
         self,
-        obsidian_client: Optional[ObsidianClient] = None,
+        mcp_server_url: str = "http://localhost:3000/sse",
     ):
-        self.obsidian = obsidian_client or ObsidianClient()
+        self.mcp_client = ObsidianMCPClient(mcp_server_url)
     
     async def initialize(self) -> bool:
         """Initialize the 2ndBrain store."""
-        return await self.obsidian.connect()
+        return await self.mcp_client.connect()
     
     async def close(self) -> None:
         """Close the store."""
-        await self.obsidian.close()
+        await self.mcp_client.disconnect()
     
     async def store(
         self,
@@ -352,31 +172,48 @@ class SecondBrainStore:
         user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> UUID:
-        """Store a note in 2ndBrain via HTTP."""
+        """Store a note via MCP."""
         title = title or self._generate_title(content)
         
-        if user_id:
-            tags = tags or []
-            tags.append(f"user:{user_id}")
+        # Build arguments for MCP tool
+        args = {
+            "title": title,
+            "content": content,
+            "folder": folder or "notes",
+            "tags": tags or [],
+        }
         
-        note_metadata = metadata or {}
-        if user_id:
-            note_metadata["user_id"] = user_id
+        if metadata:
+            args["metadata"] = metadata
         
-        note = await self.obsidian.create_note(
-            title=title,
-            content=content,
-            folder=folder or "notes",
-            tags=tags,
-            metadata=note_metadata,
-        )
-        
-        logger.info(f"Stored note in 2ndBrain: {note.id}")
-        return note.id
+        # Call MCP tool
+        try:
+            result = await self.mcp_client.call_tool("create_note", args)
+            note_id = uuid4()
+            logger.info(f"Stored note in 2ndBrain via MCP: {note_id}")
+            return note_id
+        except Exception as e:
+            logger.error(f"Failed to store note: {e}")
+            raise
     
     async def retrieve(self, path: str) -> Optional[Note]:
-        """Retrieve a note by path."""
-        return await self.obsidian.get_note(path)
+        """Retrieve a note by path via MCP."""
+        try:
+            result = await self.mcp_client.call_tool("read_note", {"path": path})
+            
+            # Parse result into Note
+            if result and hasattr(result, 'content'):
+                # Convert MCP result to Note
+                return Note(
+                    id=uuid4(),
+                    title=result.get("title", path.split("/")[-1].replace(".md", "")),
+                    content=result.get("content", ""),
+                    path=path,
+                )
+        except Exception as e:
+            logger.error(f"Failed to retrieve note: {e}")
+        
+        return None
     
     async def search(
         self,
@@ -385,16 +222,37 @@ class SecondBrainStore:
         tags: Optional[List[str]] = None,
         limit: int = 10,
     ) -> List[NoteSearchResult]:
-        """Search notes in 2ndBrain."""
-        if user_id:
-            tags = tags or []
-            tags.append(f"user:{user_id}")
+        """Search notes via MCP."""
+        args = {
+            "query": query,
+            "limit": limit,
+        }
         
-        return await self.obsidian.search_notes(
-            query=query,
-            tags=tags,
-            limit=limit,
-        )
+        if tags:
+            args["tags"] = tags
+        
+        try:
+            result = await self.mcp_client.call_tool("search_notes", args)
+            
+            results = []
+            if result and hasattr(result, 'results'):
+                for item in result.results:
+                    note = Note(
+                        id=uuid4(),
+                        title=item.get("title", ""),
+                        content=item.get("content", ""),
+                        path=item.get("path", ""),
+                        tags=item.get("tags", []),
+                    )
+                    results.append(NoteSearchResult(
+                        note=note,
+                        score=item.get("score", 0.0)
+                    ))
+            
+            return results
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return []
     
     async def get_user_notes(
         self,
@@ -402,7 +260,7 @@ class SecondBrainStore:
         limit: int = 100,
     ) -> List[Note]:
         """Get all notes for a specific user."""
-        results = await self.obsidian.search_notes(
+        results = await self.search(
             query="",
             tags=[f"user:{user_id}"],
             limit=limit,
@@ -416,8 +274,22 @@ class SecondBrainStore:
         title: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> Optional[Note]:
-        """Update a note."""
-        return await self.obsidian.update_note(path, content, title, tags)
+        """Update a note via MCP."""
+        args = {"path": path}
+        
+        if content is not None:
+            args["content"] = content
+        if title is not None:
+            args["title"] = title
+        if tags is not None:
+            args["tags"] = tags
+        
+        try:
+            result = await self.mcp_client.call_tool("update_note", args)
+            return await self.retrieve(path)
+        except Exception as e:
+            logger.error(f"Failed to update note: {e}")
+            return None
     
     def _generate_title(self, content: str) -> str:
         """Generate a title from content."""
@@ -429,8 +301,8 @@ class SecondBrainStore:
     async def get_stats(self) -> Dict[str, Any]:
         """Get 2ndBrain statistics."""
         return {
-            "endpoint": self.obsidian.endpoint,
-            "vault": self.obsidian.vault_name,
+            "mcp_url": self.mcp_client.server_url,
+            "connected": self.mcp_client._connected,
         }
 
 
@@ -439,12 +311,10 @@ _global_secondbrain_store: Optional[SecondBrainStore] = None
 
 
 def get_secondbrain_store(
-    config: Optional[Dict[str, Any]] = None,
+    mcp_server_url: str = "http://localhost:3000/sse",
 ) -> SecondBrainStore:
     """Get or create global 2ndBrain store."""
     global _global_secondbrain_store
     if _global_secondbrain_store is None:
-        _global_secondbrain_store = SecondBrainStore(
-            obsidian_client=ObsidianClient(config) if config else None
-        )
+        _global_secondbrain_store = SecondBrainStore(mcp_server_url=mcp_server_url)
     return _global_secondbrain_store

@@ -213,6 +213,9 @@ class Agent(ABC):
         self.tools = tools or []
         self.llm_config = llm_config or {}
         
+        # Initialize DSPy LM (must be configured at startup)
+        self._init_dspy_lm()
+        
         # State
         self.state = AgentState.IDLE
         self.is_active = True  # Required for repository
@@ -222,6 +225,64 @@ class Agent(ABC):
         # Metacognitive state
         self.iteration_count = 0
         self.thought_history: list[str] = []
+    
+    def _init_dspy_lm(self) -> None:
+        """
+        Initialize DSPy LM with provider injection.
+        
+        The model and API Key MUST be injected via llm_config:
+        - provider: "openai", "anthropic", "ollama", "azure"
+        - model: e.g., "gpt-4o", "claude-3-opus", "llama2"
+        - api_key: (optional) for non-env based auth
+        - api_base: (optional) for custom endpoints like Ollama
+        """
+        import os
+        import dspy
+        
+        config = self.llm_config or {}
+        provider = config.get("provider", "openai")
+        model_name = config.get("model", "gpt-4o")
+        
+        try:
+            if provider == "openai":
+                api_key = config.get("api_key") or os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    logger.warning(f"Agent {self.name}: OPENAI_API_KEY not set, using fallback")
+                self.lm = dspy.LM(f"openai/{model_name}", api_key=api_key)
+                
+            elif provider == "anthropic":
+                api_key = config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    logger.warning(f"Agent {self.name}: ANTHROPIC_API_KEY not set, using fallback")
+                self.lm = dspy.LM(f"anthropic/{model_name}", api_key=api_key)
+                
+            elif provider == "ollama":
+                api_base = config.get("api_base", "http://localhost:11434")
+                self.lm = dspy.LM(f"ollama/{model_name}", api_base=api_base)
+                
+            elif provider == "azure":
+                api_key = config.get("api_key") or os.environ.get("AZURE_API_KEY")
+                api_base = config.get("api_base") or os.environ.get("AZURE_API_BASE")
+                if not api_base:
+                    raise ValueError("Azure deployment requires api_base configuration")
+                self.lm = dspy.LM(
+                    f"azure/{model_name}",
+                    api_key=api_key,
+                    api_base=api_base,
+                )
+            else:
+                raise ValueError(f"LLM provider not supported: {provider}")
+            
+            # Configure DSPy global context
+            dspy.configure(lm=self.lm)
+            logger.info(f"DSPy LM configured: {provider}/{model_name} for agent {self.name}")
+            
+        except ImportError:
+            logger.warning(f"Agent {self.name}: DSPy not installed, using litellm fallback")
+            self.lm = None
+        except Exception as e:
+            logger.error(f"Agent {self.name}: Failed to configure DSPy: {e}")
+            self.lm = None
     
     @property
     def is_critic(self) -> bool:
@@ -407,7 +468,53 @@ class Agent(ABC):
     
     async def _call_llm(self, context: list[dict[str, Any]]) -> dict[str, Any]:
         """
-        Call LLM with context using litellm.
+        Call LLM with context.
+        
+        Priority: 1. DSPy (if configured in __init__)
+                  2. litellm (fallback)
+        """
+        # Try DSPy first if configured
+        if hasattr(self, 'lm') and self.lm is not None:
+            return await self._call_dspy(context)
+        
+        # Fallback to litellm
+        return await self._call_litellm(context)
+    
+    async def _call_dspy(self, context: list[dict[str, Any]]) -> dict[str, Any]:
+        """Call LLM using DSPy."""
+        import dspy
+        
+        try:
+            # Extract messages for DSPy
+            messages = []
+            for msg in context[-20:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                messages.append(dspy.UserMessage(content) if role == "user" else dspy.AssistantMessage(content))
+            
+            # Use DSPy LM directly
+            response = self.lm(messages)
+            
+            if response:
+                content = response[0].content if hasattr(response[0], 'content') else str(response[0])
+                return {
+                    "content": content,
+                    "tool_calls": [],
+                    "model": self.llm_config.get("model", "dspy"),
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                }
+            
+            return {"content": "DSPy returned empty response", "tool_calls": []}
+            
+        except Exception as e:
+            logger.error(f"DSPy call failed: {e}")
+            # Fall back to litellm
+            return await self._call_litellm(context)
+    
+    async def _call_litellm(self, context: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        Call LLM with context using litellm (fallback).
         
         Supports multiple providers: OpenAI, Anthropic, Azure, local models, etc.
         """

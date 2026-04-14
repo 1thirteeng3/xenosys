@@ -16,6 +16,13 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from ...resilience.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    CircuitBreakerError,
+    get_breaker_registry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,44 +153,61 @@ class CortexClient:
         top_k: int = 10,
         filter_dict: Optional[Dict[str, Any]] = None,
     ) -> List[SemanticSearchResult]:
-        """Search for similar embeddings via HTTP."""
+        """Search for similar embeddings via HTTP with circuit breaker."""
+        # Get or create circuit breaker
+        registry = get_breaker_registry()
+        breaker = await registry.get_or_create(
+            "cortex_search",
+            fail_max=3,
+            timeout_duration=30.0,
+        )
+        
         try:
-            client = await self._get_client()
-            # First, embed the query
-            embed_response = await client.post(
-                "/embed",
-                json={"text": query, "model": self.embedding_model}
-            )
-            if embed_response.status_code != 200:
-                return []
-            
-            query_embedding = embed_response.json().get("embedding", [])
-            
-            # Search
-            search_response = await client.post(
-                f"/collections/{collection}/search",
-                json={
-                    "embedding": query_embedding,
-                    "top_k": top_k,
-                    "filter": filter_dict
-                }
-            )
-            
-            if search_response.status_code != 200:
-                return []
-            
-            results = []
-            for item in search_response.json().get("results", []):
-                entry = SemanticEntry(
-                    id=UUID(item["id"]),
-                    content=item.get("content", ""),
-                    embedding=item.get("embedding"),
-                    importance=item.get("metadata", {}).get("importance", 0.5)
+            # Use circuit breaker for the HTTP call
+            async def _do_search() -> List[SemanticSearchResult]:
+                client = await self._get_client()
+                
+                # First, embed the query
+                embed_response = await client.post(
+                    "/embed",
+                    json={"text": query, "model": self.embedding_model}
                 )
-                results.append(SemanticSearchResult(entry=entry, score=item.get("score", 0.0)))
+                if embed_response.status_code != 200:
+                    return []
+                
+                query_embedding = embed_response.json().get("embedding", [])
+                
+                # Search
+                search_response = await client.post(
+                    f"/collections/{collection}/search",
+                    json={
+                        "embedding": query_embedding,
+                        "top_k": top_k,
+                        "filter": filter_dict
+                    }
+                )
+                
+                if search_response.status_code != 200:
+                    return []
+                
+                results = []
+                for item in search_response.json().get("results", []):
+                    entry = SemanticEntry(
+                        id=UUID(item["id"]),
+                        content=item.get("content", ""),
+                        embedding=item.get("embedding"),
+                        importance=item.get("metadata", {}).get("importance", 0.5)
+                    )
+                    results.append(SemanticSearchResult(entry=entry, score=item.get("score", 0.0)))
+                
+                return results
             
-            return results
+            return await breaker.call(_do_search)
             
+        except CircuitBreakerOpenError:
+            # Fast fail: return empty list without touching network
+            logger.warning("Cortex circuit breaker open, fast failing search")
+            return []
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return []

@@ -4,6 +4,7 @@
  */
 
 import * as grpc from '@grpc/grpc-js';
+import { status } from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -93,6 +94,40 @@ interface StatusRequest {
 interface StatusResponse {
   status?: string;
   version?: string;
+}
+// ============================================================================
+// Error Mapping
+// ============================================================================
+
+/**
+ * Map gRPC errors to HTTP status codes.
+ * Prevents stack trace leaks and provides semantic HTTP responses.
+ */
+function mapGrpcErrorToHttp(error: any): { status: number; message: string } {
+  if (!error || !error.code) {
+    return { status: 500, message: 'Internal Server Error' };
+  }
+
+  switch (error.code) {
+    case status.INVALID_ARGUMENT:
+      return { status: 400, message: 'Bad Request' };
+    case status.NOT_FOUND:
+      return { status: 404, message: 'Not Found' };
+    case status.ALREADY_EXISTS:
+      return { status: 409, message: 'Conflict' };
+    case status.PERMISSION_DENIED:
+      return { status: 403, message: 'Forbidden' };
+    case status.UNAUTHENTICATED:
+      return { status: 401, message: 'Unauthorized' };
+    case status.RESOURCE_EXHAUSTED:
+      return { status: 429, message: 'Too Many Requests' };
+    case status.UNAVAILABLE:
+      return { status: 503, message: 'Service Unavailable' };
+    case status.DEADLINE_EXCEEDED:
+      return { status: 504, message: 'Gateway Timeout' };
+    default:
+      return { status: 500, message: error.details || 'Unknown Error' };
+  }
 }
 
 // ============================================================================
@@ -509,14 +544,21 @@ export class GRPCBridge {
   // ========================================================================
 
   private resolveProtoPath(): string {
+    // Priority order: 
+    // 1. Production: dist/grpc/../proto (relative to compiled bridge.js)
+    // 2. Development: src/grpc/../proto (relative to source)
+    // 3. Project root: proto/nexus.proto
     const possiblePaths = [
-      resolve(__dirname, '../../proto/nexus.proto'),
-      resolve(__dirname, '../../../proto/nexus.proto'),
-      resolve(process.cwd(), 'proto/nexus.proto'),
+      resolve(__dirname, '../proto/nexus.proto'),  // Production: dist/proto/
+      resolve(__dirname, '../../proto/nexus.proto'), // Dev: src/proto from grpc/
+      resolve(__dirname, '../../../proto/nexus.proto'), // Alt dev path
+      resolve(process.cwd(), 'proto/nexus.proto'), // Project root
+      resolve(process.cwd(), 'src/proto/nexus.proto'), // Src root
     ];
 
     for (const p of possiblePaths) {
       if (existsSync(p)) {
+        console.log(`Using proto file: ${p}`);
         return p;
       }
     }
@@ -592,7 +634,9 @@ export class GRPCBridge {
   }
 
   private formatError(error: grpc.ServiceError): Error {
-    return new Error(`gRPC Error [${error.code}]: ${error.message}`);
+    // Use the mapper to prevent stack trace leaks
+    const httpError = mapGrpcErrorToHttp(error);
+    return new Error(`[${httpError.status}] ${httpError.message}`);
   }
 
   private createServiceError(name: string, error: unknown): grpc.ServiceError {

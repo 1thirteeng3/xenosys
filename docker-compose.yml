@@ -1,0 +1,215 @@
+# =============================================================================
+# XenoSys Docker Compose Configuration
+# =============================================================================
+# Self-hosted deployment for VPS servers
+#
+# Installation:
+#   git clone https://github.com/org/xenosys.git
+#   cd xenosys
+#   cp .env.example .env
+#   docker compose up -d
+# =============================================================================
+
+services:
+  # -------------------------------------------------------------------------
+  # Gateway Service (Node.js)
+  # -------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./nexus/gateway
+      dockerfile: Dockerfile
+    container_name: xenosys-gateway
+    ports:
+      - "3000:3000"      # HTTP API
+      - "50051:50051"    # gRPC
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GRPC_PORT=50051
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CORE_HOST=core
+      - CORE_PORT=50051
+    depends_on:
+      - core
+      - redis
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # Core Service (Python)
+  # -------------------------------------------------------------------------
+  core:
+    build:
+      context: ./nexus/core
+      dockerfile: Dockerfile
+    container_name: xenosys-core
+    ports:
+      - "50051:50051"    # gRPC
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      # Memory integrations
+      - CORTEX_ENDPOINT=http://cortex:8000
+      - OPENVIKING_ENDPOINT=http://openviking:8080
+      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3000/sse
+      - BRAINSYS_MCP_URL=http://mcp-brainsys:9000/sse
+      # Messaging
+      - MESSAGE_BROKER=redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+      - cortex
+      - openviking
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # Redis (Message Broker & Cache)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: xenosys-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # Cortex (Semantic Memory - Vector Database)
+  # -------------------------------------------------------------------------
+  cortex:
+    image: cortexproject/cortex:latest
+    container_name: xenosys-cortex
+    ports:
+      - "8000:8000"
+    environment:
+      - CORTEX_SERVER_PORT=8000
+      - CORTEX_STORE_PROMETHEUS_PORT=8001
+    volumes:
+      - cortex-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # OpenViking (Episodic Memory - Session Logging)
+  # -------------------------------------------------------------------------
+  openviking:
+    image: openviking/openviking:latest
+    container_name: xenosys-openviking
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=info
+    volumes:
+      - openviking-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # MCP Server - Obsidian (2ndBrain / Long-term Memory)
+  # -------------------------------------------------------------------------
+  mcp-obsidian:
+    image: mcp/obsidian-mcp:latest
+    container_name: xenosys-mcp-obsidian
+    ports:
+      - "3000:3000"
+    environment:
+      - MCP_SERVER_NAME=obsidian
+      - OBSIDIAN_VAULT_PATH=/vault
+    volumes:
+      - obsidian-vault:/vault
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # MCP Server - BrainSys (Contextual Memory)
+  # -------------------------------------------------------------------------
+  mcp-brainsys:
+    image: mcp/brainsys-mcp:latest
+    container_name: xenosys-mcp-brainsys
+    ports:
+      - "9000:9000"
+    environment:
+      - MCP_SERVER_NAME=brainsys
+      - MEMBASE_ENDPOINT=http://membase:9090
+    volumes:
+      - brainsys-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    depends_on:
+      - membase
+
+  # -------------------------------------------------------------------------
+  # Membase (Contextual Memory Storage)
+  # -------------------------------------------------------------------------
+  membase:
+    image: membase/membase:latest
+    container_name: xenosys-membase
+    ports:
+      - "9090:9090"
+    environment:
+      - MEMBASE_ADMIN=admin
+      - MEMBASE_PASSWORD=password
+    volumes:
+      - membase-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  xenosys-network:
+    driver: bridge
+    name: xenosys-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    name: xenosys-redis-data
+  cortex-data:
+    name: xenosys-cortex-data
+  openviking-data:
+    name: xenosys-openviking-data
+  obsidian-vault:
+    name: xenosys-obsidian-vault
+  brainsys-data:
+    name: xenosys-brainsys-data
+  membase-data:
+    name: xenosys-membase-data
