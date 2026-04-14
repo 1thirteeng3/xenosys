@@ -18,7 +18,7 @@
 
 **Core Capabilities**:
 - Unified agent execution across TypeScript and Python
-- Three-tier memory system (L1/L2/L3)
+- Four-tier memory system (L1/L2/L3/L4)
 - Event-driven agent activation
 - Human-in-the-Loop (HITL) governance
 - Self-improvement via STaR and LoRA adapters
@@ -57,12 +57,13 @@
 │                        └─────────────┘                          │
 │                              │                              │
 │         ┌──────────────────────┼──────────────────────┐
-│         │                      │                      │
-│    ┌────▼────┐        ┌──────▼─────┐       ┌──────▼────┐
-│    │   L1   │        │    L2    │       │    L3    │
-│    │  Cache  │        │ Semantic  │       │Episodic  │
-│    │ (Redis)│        │(ChromaDB)│       │ (Postgre)│
-│    └───────┘        └──────────┘       └──────────┘
+│         │                      │                      │              │
+│    ┌────▼────┐        ┌──────▼─────┐       ┌──────▼────┐ ┌────▼────┐
+│    │   L1   │        │    L2    │       │    L3    │ │   L4   │
+│    │  Cache  │        │ Semantic  │       │Episodic  │ │Contextual│
+│    │ (Redis)│        │(ChromaDB)│       │ (Postgre)│ │  Graph  │
+│    └───────┘        └──────────┘       └──────────┘ │(mcp-mem)│
+│                                                       └─────────┘
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,7 +81,7 @@
 
 1. **Event-Task Driven**: Agents "sleep" without events
 2. **Adversarial by Default**: Every executor has paired critic/auditor
-3. **Memory-First**: Three persistent memory layers beyond context
+3. **Memory-First**: Four persistent memory layers (L1/L2/L3/L4) beyond context
 4. **Composable Entities**: Multi-agents form single entities
 5. **Human-in-the-Loop**: Critical decisions require human approval
 6. **Self-Improving**: STaR self-improvement, LoRA adapter evolution
@@ -97,7 +98,7 @@
 |-----------|------------|------|
 | Gateway | TypeScript/Node.js 22+ | Channel adapters, REST API, gRPC server |
 | Core | Python 3.12+ | Agent runtime, DSPy, event bus |
-| Data Stores | PostgreSQL 16, ChromaDB, Redis | L1/L2/L3 memory |
+| Data Stores | PostgreSQL 16, ChromaDB, Redis, mcp-memory-service | L1/L2/L3/L4 memory |
 | External | OpenAI, Anthropic, MCP | AI providers, tools |
 
 **Why Modular Monolith**:
@@ -263,13 +264,17 @@ CREATE TABLE audit_log (
 | L1 Cache | Redis | 1 hour | Most frequent |
 | L2 Semantic | ChromaDB | Persistent | Frequent |
 | L3 Episodic | PostgreSQL | 90 days | Historical |
+| L4 Contextual | mcp-memory-service | Persistent | Graph-based ("Caderninho") |
 
 **Memory Routing Logic**:
 
 ```python
 class MemoryManager:
     async def store(self, memory: MemoryItem) -> None:
-        if memory.importance_score > 0.8:
+        if memory.importance_score > 0.9:
+            # L4: Graph-based contextual memory
+            await self.l4.write(memory)  # mcp-memory-service
+        elif memory.importance_score > 0.8:
             # Immediately promote to L3
             await self.l3.write(memory)
         elif memory.importance_score > 0.5:
@@ -278,6 +283,26 @@ class MemoryManager:
         else:
             # L1 only
             await self.l1.write(memory)
+```
+
+**L4 Integration Pattern**:
+```python
+class L4MemoryClient:
+    """Cognitive Interception Pattern for L4 Graph Memory"""
+    
+    async def pre_hook(self, query: str) -> Dict:
+        """Load contextual memory before agent responds"""
+        result = await self.mcp.call('read_graph', query=query)
+        return result.entities  # Returns graph entities
+    
+    async def post_hook(self, memory: MemoryItem) -> None:
+        """Reflexive write - evaluate if new knowledge was learned"""
+        if memory.importance_score > 0.7:
+            # Async write to L4 graph
+            await self.mcp.call('create_entities', entities=[{
+                'name': memory.key,
+                'content': memory.content
+            }])
 ```
 
 ---
@@ -304,7 +329,7 @@ class MemoryManager:
 | `EventBus` | Async pub/sub with Redis |
 | `AgentRuntime` | ReAct agent loop |
 | `ToolRegistry` | Tool discovery and execution |
-| `MemoryManager` | Three-tier memory routing |
+| `MemoryManager` | Four-tier memory routing (L1→L4) |
 | `CostTracker` | Budget and rate limiting |
 | `HITLWorkflow` | Human approval workflow |
 
