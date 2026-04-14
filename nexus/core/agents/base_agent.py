@@ -406,12 +406,79 @@ class Agent(ABC):
         return True
     
     async def _call_llm(self, context: list[dict[str, Any]]) -> dict[str, Any]:
-        """Call LLM with context. Placeholder for DSPy integration."""
-        # In production, this uses DSPy with configured LLM
-        return {
-            "content": "This is a placeholder response.",
-            "tool_calls": [],
-        }
+        """
+        Call LLM with context using litellm.
+        
+        Supports multiple providers: OpenAI, Anthropic, Azure, local models, etc.
+        """
+        try:
+            import litellm
+            
+            # Get LLM config from agent or use defaults
+            model = self.llm_config.get("model", "gpt-4o")
+            provider = self.llm_config.get("provider", "openai")
+            
+            # Build litellm request
+            # Construct full model string if using custom provider
+            model_str = f"{provider}/{model}" if provider != "openai" else model
+            
+            # Extract last N messages for the API
+            messages_for_api = []
+            for msg in context[-20:]:  # Limit to last 20 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                messages_for_api.append({"role": role, "content": content})
+            
+            # Prepare optional params
+            optional_params = {}
+            if self.llm_config.get("temperature"):
+                optional_params["temperature"] = self.llm_config["temperature"]
+            if self.llm_config.get("max_tokens"):
+                optional_params["max_tokens"] = self.llm_config["max_tokens"]
+            if self.llm_config.get("top_p"):
+                optional_params["top_p"] = self.llm_config["top_p"]
+            
+            # Add API key from config if provided
+            if self.llm_config.get("api_key"):
+                optional_params["api_key"] = self.llm_config["api_key"]
+            
+            # Make the API call via litellm
+            response = await litellm.acompletion(
+                model=model_str,
+                messages=messages_for_api,
+                **optional_params
+            )
+            
+            # Extract response content
+            content = response.choices[0].message.content or ""
+            
+            # Extract usage info if available
+            usage = getattr(response, 'usage', None)
+            tokens_in = getattr(usage, 'prompt_tokens', 0) if usage else 0
+            tokens_out = getattr(usage, 'completion_tokens', 0) if usage else 0
+            
+            return {
+                "content": content,
+                "tool_calls": [],
+                "model": model,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }
+            
+        except ImportError:
+            # Fallback if litellm not installed
+            logger.warning("litellm not installed, using placeholder response")
+            return {
+                "content": "This is a placeholder response (litellm not available).",
+                "tool_calls": [],
+            }
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            return {
+                "content": f"Error: {str(e)}",
+                "tool_calls": [],
+                "error": str(e),
+            }
     
     def _build_context(self, request: AgentRequest) -> list[dict[str, Any]]:
         """Build context for LLM call."""

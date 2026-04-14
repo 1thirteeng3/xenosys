@@ -137,8 +137,43 @@ class EntityBuilder:
             created_by=created_by,
         )
         
-        logger.info(f"Built entity: {entity.name} ({len(entity.agent_ids)} agents)")
+        # Store adversarial flag in memory config for runtime
+        if self._adversarial:
+            entity.memory_config["_adversarial"] = True
+        
+        logger.info(f"Built entity: {entity.name} ({len(entity.agent_ids)} agents, adversarial={self._adversarial})")
         return entity
+    
+    def build_with_critic(self, executor_agent: Agent, critic_system_prompt: str) -> tuple[Agent, Agent]:
+        """
+        Build executor + critic pair for adversarial execution.
+        
+        Returns a tuple of (executor, critic) that can be used together.
+        """
+        from ..agents.base_agent import AdversarialAgent
+        
+        # Create critic for the executor
+        critic = AdversarialAgent(
+            agent_id=str(uuid4()),
+            role=AgentRole.REFLECTOR,
+            agent_type=AgentType.CRITIC,
+            name=f"Critic for {executor_agent.name}",
+            system_prompt=critic_system_prompt or self._get_default_critic_prompt(),
+            target_agent_id=executor_agent.agent_id,
+        )
+        
+        logger.info(f"Built adversarial pair: {executor_agent.name} <-> {critic.name}")
+        return executor_agent, critic
+    
+    def _get_default_critic_prompt(self) -> str:
+        """Get default critic system prompt."""
+        return """You are a critical auditor agent. Your role is to:
+1. Evaluate executor agent outputs for correctness
+2. Check for hallucinations or factual errors
+3. Verify compliance with policies
+4. Suggest improvements
+Provide constructive feedback and identify any issues.
+Be adversarial but fair - challenge assumptions but acknowledge good work."""
 
 
 # ============================================================================
