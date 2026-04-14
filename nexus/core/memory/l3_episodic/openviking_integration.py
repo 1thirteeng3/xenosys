@@ -16,6 +16,12 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from ...resilience.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    get_breaker_registry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -290,10 +296,18 @@ class OpenVikingClient:
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> InteractionRecord:
-        """Record an interaction message via HTTP."""
+        """Record an interaction message via HTTP with circuit breaker."""
         message_id = message_id or str(uuid4())
         
-        try:
+        # Get or create circuit breaker
+        registry = get_breaker_registry()
+        breaker = await registry.get_or_create(
+            "openviking_interaction",
+            fail_max=3,
+            timeout_duration=30.0,
+        )
+        
+        async def _do_record() -> InteractionRecord:
             client = await self._get_client()
             response = await client.post(
                 "/api/v1/events",
@@ -328,7 +342,13 @@ class OpenVikingClient:
                     metadata=metadata or {},
                 )
             raise Exception(f"Failed to record interaction: {response.status_code}")
-            
+        
+        try:
+            return await breaker.call(_do_record)
+        except CircuitBreakerOpenError:
+            # Fast fail: raise to allow fallback
+            logger.warning("OpenViking circuit breaker open, fast failing")
+            raise
         except Exception as e:
             logger.error(f"Failed to record interaction: {e}")
             raise

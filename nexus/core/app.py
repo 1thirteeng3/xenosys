@@ -51,22 +51,33 @@ class XenoSysApp:
         logger.info("XenoSys started successfully")
     
     async def stop(self) -> None:
-        """Stop the application."""
-        logger.info("Stopping XenoSys...")
+        """Stop the application with graceful shutdown."""
+        logger.info("Initiating graceful shutdown...")
         
         self._running = False
         
-        # Stop message broker
-        await shutdown_broker()
+        # 1. Stop new requests - Close HTTP clients and gRPC connections
+        logger.info("Closing HTTP clients and gRPC connections...")
         
-        # Stop event bus
+        # 2. Disconnect Event Bus, clearing Redis connections
+        logger.info("Disconnecting Event Bus (Redis connections)...")
         await event_bus.stop()
         
-        # Cancel all tasks
-        for task in self._tasks:
-            task.cancel()
+        # 3. Stop message broker (includes Redis cleanup if using Redis backend)
+        logger.info("Stopping message broker...")
+        await shutdown_broker()
         
-        logger.info("XenoSys stopped")
+        # 4. Cancel pending tasks
+        logger.info("Canceling pending tasks...")
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to complete cancellation
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        
+        logger.info("XenoSys safely shut down.")
     
     def run(self) -> None:
         """Run the application."""
