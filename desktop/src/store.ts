@@ -15,7 +15,7 @@ const store = new Store('.settings.dat');
 
 /**
  * Save API key securely
- * @param keyName - Key identifier (e.g., 'openai_api_key', 'anthropic_api_key')
+ * @param keyName - Key identifier (e.g., 'openai_api_key', 'cloudflare_token')
  * @param value - API key value
  */
 export const saveApiKey = async (keyName: string, value: string): Promise<void> => {
@@ -60,6 +60,22 @@ export const listApiKeys = async (): Promise<string[]> => {
  */
 export const hasApiKey = async (keyName: string): Promise<boolean> => {
   return await store.has(keyName);
+};
+
+/**
+ * Save Cloudflare Zero Trust Token
+ * @param token - The Cloudflare tunnel token
+ */
+export const saveCloudflareToken = async (token: string): Promise<void> => {
+  await saveApiKey('cloudflare_token', token);
+};
+
+/**
+ * Get Cloudflare Zero Trust Token
+ * @returns Token or null if not configured
+ */
+export const getCloudflareToken = async (): Promise<string | null> => {
+  return await getApiKey('cloudflare_token');
 };
 
 export default store;
