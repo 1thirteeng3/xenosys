@@ -1,5 +1,5 @@
 // XenoSys Desktop - Tauri Application
-// Manages sidecar processes (Gateway and Core)
+// Manages sidecar processes (Gateway and Core) and NAT traversal
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -9,18 +9,60 @@
 use log::{info, error, warn};
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::path::PathBuf;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-// State for managing sidecar processes
+// Base64 helper module
+mod base64_helper {
+    pub fn encode(data: &str) -> String {
+        use std::io::Write;
+        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        
+        let bytes = data.as_bytes();
+        let mut result = String::new();
+        
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as usize;
+            let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+            let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+            
+            result.push(CHARSET[b0 >> 2] as char);
+            result.push(CHARSET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+            
+            if chunk.len() > 1 {
+                result.push(CHARSET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+            } else {
+                result.push('=');
+            }
+            
+            if chunk.len() > 2 {
+                result.push(CHARSET[b2 & 0x3f] as char);
+            } else {
+                result.push('=');
+            }
+        }
+        
+        result
+    }
+}
+
+// State for managing sidecar processes and tunnel
 struct SidecarState {
     gateway_running: bool,
     core_running: bool,
 }
 
+struct TunnelState {
+    running: bool,
+    url: Option<String>,
+    process: Option<u32>, // PID
+}
+
 struct AppState {
     sidecars: Mutex<SidecarState>,
+    tunnel: Mutex<TunnelState>,
 }
 
 fn main() {
@@ -37,6 +79,11 @@ fn main() {
                 gateway_running: false,
                 core_running: false,
             }),
+            tunnel: Mutex::new(TunnelState {
+                running: false,
+                url: None,
+                process: None,
+            }),
         })
         .invoke_handler(tauri::generate_handler![
             start_sidecars,
@@ -44,7 +91,12 @@ fn main() {
             get_status,
             check_ollama,
             install_ollama,
-            configure_mode
+            configure_mode,
+            start_tunnel,      // NEW: Start Cloudflare tunnel
+            stop_tunnel,       // NEW: Stop tunnel
+            get_tunnel_url,    // NEW: Get current tunnel URL
+            generate_pairing_qr, // NEW: Generate QR for mobile pairing
+            download_cloudflared // NEW: Download cloudflared binary
         ])
         .setup(|app| {
             info!("Tauri app setup complete");
@@ -297,4 +349,214 @@ async fn check_service(url: &str) -> Result<(), String> {
         Ok(response) => Err(format!("Service returned: {}", response.status())),
         Err(e) => Err(e.to_string()),
     }
+}
+
+// ============================================================================
+// Cloudflare Tunnel (NAT Traversal)
+// ============================================================================
+
+fn get_cloudflared_path() -> String {
+    let base_dir = dirs::executable_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    
+    #[cfg(target_os = "windows")]
+    let cloudflared = base_dir.join("cloudflared.exe");
+    
+    #[cfg(not(target_os = "windows"))]
+    let cloudflared = base_dir.join("cloudflared");
+    
+    cloudflared.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+async fn download_cloudflared() -> Result<String, String> {
+    info!("Downloading cloudflared...");
+    
+    let cloudflared_path = get_cloudflared_path();
+    
+    // Check if already exists
+    if std::path::Path::new(&cloudflared_path).exists() {
+        info!("cloudflared already exists at {}", cloudflared_path);
+        return Ok(cloudflared_path);
+    }
+    
+    let download_url = if cfg!(target_os = "windows") {
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+    } else if cfg!(target_os = "macos") {
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64"
+    } else {
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+    };
+    
+    info!("Downloading from: {}", download_url);
+    
+    // Download the binary
+    let client = reqwest::Client::new();
+    let response = client.get(download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+    
+    let bytes = response.bytes()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    
+    // Write to file
+    std::fs::write(&cloudflared_path, &bytes)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    
+    // Make executable (Unix only)
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&cloudflared_path)
+            .map_err(|e| format!("Failed to get permissions: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&cloudflared_path, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+    
+    info!("cloudflared downloaded to {}", cloudflared_path);
+    Ok(cloudflared_path)
+}
+
+#[tauri::command]
+async fn start_tunnel(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    info!("Starting Cloudflare tunnel...");
+    
+    // Ensure gateway is running
+    let sidecar_state = state.sidecars.lock().map_err(|e| e.to_string())?;
+    if !sidecar_state.gateway_running {
+        return Err("Gateway must be running to start tunnel".to_string());
+    }
+    drop(sidecar_state);
+    
+    // Get cloudflared path
+    let cloudflared_path = get_cloudflared_path();
+    
+    // Ensure cloudflared exists
+    if !std::path::Path::new(&cloudflared_path).exists() {
+        return Err("cloudflared not found. Call download_cloudflared first.".to_string());
+    }
+    
+    // Start tunnel pointing to local gateway
+    let mut child = Command::new(&cloudflared_path)
+        .args(&["tunnel", "--url", "http://localhost:3000"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start tunnel: {}", e))?;
+    
+    // Parse output to get tunnel URL
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+    let mut reader = BufReader::new(stdout).lines();
+    
+    let mut tunnel_url: Option<String> = None;
+    
+    // Read output to find the URL (cloudflared outputs it to stdout)
+    // Timeout after 30 seconds waiting for URL
+    let timeout = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+    
+    while start.elapsed() < timeout {
+        tokio::select! {
+            line = reader.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        info!("[cloudflared] {}", line);
+                        // Cloudflare tunnel outputs URL like: https://*.trycloudflare.com
+                        if line.starts_with("https://") && line.contains("trycloudflare") {
+                            tunnel_url = Some(line.clone());
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
+        }
+    }
+    
+    let tunnel_url = match tunnel_url {
+        Some(url) => url,
+        None => return Err("Failed to get tunnel URL within timeout".to_string()),
+    };
+    
+    // Update state
+    let mut tunnel_state = state.tunnel.lock().map_err(|e| e.to_string())?;
+    tunnel_state.running = true;
+    tunnel_state.url = Some(tunnel_url.clone());
+    tunnel_state.process = Some(child.id().unwrap_or(0));
+    
+    info!("Tunnel started: {}", tunnel_url);
+    Ok(tunnel_url)
+}
+
+#[tauri::command]
+async fn stop_tunnel(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    info!("Stopping Cloudflare tunnel...");
+    
+    let mut tunnel_state = state.tunnel.lock().map_err(|e| e.to_string())?;
+    
+    if let Some(pid) = tunnel_state.process {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+                .args(&["/F", "/PID", &pid.to_string()])
+                .output()
+                .await;
+        }
+        
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("kill")
+                .arg(pid.to_string())
+                .output()
+                .await;
+        }
+    }
+    
+    tunnel_state.running = false;
+    tunnel_state.url = None;
+    tunnel_state.process = None;
+    
+    info!("Tunnel stopped");
+    Ok("Tunnel stopped".to_string())
+}
+
+#[tauri::command]
+fn get_tunnel_url(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+    let tunnel_state = state.tunnel.lock().map_err(|e| e.to_string())?;
+    Ok(tunnel_state.url.clone())
+}
+
+#[tauri::command]
+fn generate_pairing_qr(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let tunnel_state = state.tunnel.lock().map_err(|e| e.to_string())?;
+    
+    let tunnel_url = tunnel_state.url.clone()
+        .ok_or("Tunnel not running. Start tunnel first.")?;
+    
+    // Generate JWT token for mobile auth (simplified - in production use proper JWT)
+    let token = format!("xenosys_mobile_token_{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs());
+    
+    // Create JSON payload
+    let payload = serde_json::json!({
+        "url": tunnel_url,
+        "token": token,
+        "version": "1.0"
+    });
+    
+    // Encode as base64 for QR
+    let encoded = base64_helper::encode(&payload.to_string());
+    
+    info!("Generated pairing QR with URL: {}", tunnel_url);
+    
+    // Return the full QR data URL (in production, use proper QR library)
+    Ok(format!("data:application/json;base64,{}", encoded))
 }
