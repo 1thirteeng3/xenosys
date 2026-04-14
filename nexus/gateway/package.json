@@ -1,0 +1,71 @@
+{
+  "name": "@xenosys/gateway",
+  "version": "1.0.0",
+  "description": "XenoSys Unified Gateway - TypeScript/Node.js multi-channel adapter layer",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./channels": {
+      "import": "./dist/channels/index.js",
+      "types": "./dist/channels/index.d.ts"
+    },
+    "./plugins": {
+      "import": "./dist/plugins/index.js",
+      "types": "./dist/plugins/index.d.ts"
+    },
+    "./acp": {
+      "import": "./dist/acp/index.js",
+      "types": "./dist/acp/index.d.ts"
+    },
+    "./grpc": {
+      "import": "./dist/grpc/index.js",
+      "types": "./dist/grpc/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc && tsc-alias",
+    "dev": "tsx watch src/gateway/server.ts",
+    "start": "node dist/gateway/server.js",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@xenosys/acp-proto": "workspace:*",
+    "@xenosys/plugin-sdk": "workspace:*",
+    "hono": "^4.7.11",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1",
+    "yaml": "^2.6.1",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2",
+    "@grpc/grpc-js": "^1.12.5",
+    "@grpc/proto-loader": "^0.7.13",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8",
+    "eslint": "^9.18.0",
+    "@typescript-eslint/eslint-plugin": "^8.21.0",
+    "@typescript-eslint/parser": "^8.21.0",
+    "tsc-alias": "^1.8.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
+}
