@@ -125,7 +125,8 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
     
     // Start Gateway sidecar
     if !sidecar_state.gateway_running {
-        let gateway_path = get_sidecar_path("gateway");
+        // RIGOR: Os nomes DEVEM corresponder exatamente ao output do build_core.py e pkg/bun do Gateway
+        let gateway_path = get_sidecar_path("xenosys-gateway-bin");
         info!("Starting gateway from: {}", gateway_path);
         
         let mut child = Command::new(&gateway_path)
@@ -152,7 +153,8 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
     
     // Start Core sidecar with API key from secure store
     if !sidecar_state.core_running {
-        let core_path = get_sidecar_path("core");
+        // RIGOR: Os nomes DEVEM corresponder exatamente ao output do build_core.py e pkg/bun do Gateway
+        let core_path = get_sidecar_path("xenosys-core-bin");
         info!("Starting core from: {}", core_path);
         
         // Check if API key available from environment (set from store at app init)
