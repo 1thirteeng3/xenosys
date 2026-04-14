@@ -1,40 +1,98 @@
 /**
  * XenoSys Gateway - gRPC Bridge
- * TypeScript ↔ Python interop via gRPC
+ * TypeScript ↔ Python interop via gRPC with TLS
  */
 
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync, existsSync } from 'fs';
 import { AgentRequest, AgentResponse } from '../gateway/types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // ============================================================================
-// gRPC Service Definition
+// Configuration
 // ============================================================================
 
-interface NexusService {
-  ExecuteAgent(
-    call: grpc.ServerUnaryCall<AgentRequest, AgentResponse>,
-    callback: (error: grpc.ServiceError | null, response?: AgentResponse) => void
-  ): void;
+interface TLSConfig {
+  enabled: boolean;
+  certPath?: string;
+  keyPath?: string;
+  caPath?: string;
+}
 
-  StreamAgent(
-    call: grpc.ServerWritableStream<AgentRequest, AgentResponse>
-  ): void;
+interface GRPCBridgeConfig {
+  endpoint: string;
+  tls?: TLSConfig;
+  connectionTimeout?: number;
+}
 
-  GetStatus(
-    call: grpc.ServerUnaryCall<{ node_id: string }, { status: string; version: string }>,
-    callback: (error: grpc.ServiceError | null, response?: { status: string; version: string }) => void
+// ============================================================================
+// Proto Service Interface (Generated Stub Pattern)
+// ============================================================================
+
+interface NexusRuntimeClient {
+  executeAgent(
+    request: ExecuteAgentRequest,
+    callback: (error: grpc.ServiceError | null, response: ExecuteAgentResponse) => void
+  ): void;
+  
+  streamAgent(
+    request: ExecuteAgentRequest,
+    metadata?: grpc.Metadata,
+    options?: grpc.CallOptions
+  ): grpc.ClientReadableStream<ExecuteAgentResponse>;
+  
+  getStatus(
+    request: StatusRequest,
+    callback: (error: grpc.ServiceError | null, response: StatusResponse) => void
   ): void;
 }
 
-interface HealthCheckResult {
-  healthy: boolean;
-  latencyMs?: number;
+// Proto message types
+interface ExecuteAgentRequest {
+  session_id?: string;
+  user_id?: string;
+  message?: string;
+  context?: {
+    agent_id?: string;
+    entity_id?: string;
+    system_prompt?: string;
+  };
+  options?: {
+    max_iterations?: number;
+    timeout_ms?: number;
+    temperature?: number;
+    model?: string;
+  };
+}
+
+interface ExecuteAgentResponse {
+  session_id?: string;
+  message_id?: string;
+  content?: string;
+  done?: boolean;
+  metadata?: {
+    model?: string;
+    tokens_in?: number;
+    tokens_out?: number;
+    cost_usd?: number;
+    latency_ms?: number;
+    iterations?: number;
+  };
+  error?: string;
+}
+
+interface StatusRequest {
+  node_id?: string;
+}
+
+interface StatusResponse {
+  status?: string;
+  version?: string;
 }
 
 // ============================================================================
@@ -43,10 +101,16 @@ interface HealthCheckResult {
 
 export class GRPCBridge {
   private static instance: GRPCBridge;
-  private client: grpc.Client | null = null;
+  private client: NexusRuntimeClient | null = null;
   private server: grpc.Server | null = null;
   private connected = false;
-  private endpoint = '';
+  private config: GRPCBridgeConfig | null = null;
+  
+  // Circuit breaker state
+  private failures = 0;
+  private lastFailure: number = 0;
+  private readonly circuitBreakerThreshold = 5;
+  private readonly circuitBreakerTimeout = 30000; // 30 seconds
 
   private constructor() {}
 
@@ -58,75 +122,125 @@ export class GRPCBridge {
   }
 
   /**
-   * Connect as client to Python runtime
+   * Connect as client to Python runtime with TLS
    */
-  async connect(endpoint: string): Promise<void> {
+  async connect(config: GRPCBridgeConfig): Promise<void> {
     if (this.client) {
       throw new Error('Already connected');
     }
 
-    this.endpoint = endpoint;
+    this.config = config;
 
-    // Load proto file
-    const packageDefinition = protoLoader.loadSync(
-      resolve(__dirname, '../../proto/nexus.proto'),
-      {
-        keepCase: false,
-        longs: String,
-        enums: String,
-        defaults: true,
-        oneofs: true,
-      }
-    );
+    // Check circuit breaker
+    if (this.isCircuitOpen()) {
+      throw new Error('Circuit breaker is open');
+    }
+
+    // Load proto file with proper path resolution
+    const protoPath = this.resolveProtoPath();
+    
+    if (!existsSync(protoPath)) {
+      throw new Error(`Proto file not found: ${protoPath}`);
+    }
+
+    const packageDefinition = protoLoader.loadSync(protoPath, {
+      keepCase: false,
+      longs: String,
+      enums: String,
+      defaults: true,
+      oneofs: true,
+      includeDirs: [resolve(__dirname, '../../proto')],
+    });
 
     const protoDescriptor = grpc.loadPackageDefinition(packageDefinition);
-    const nexusProto = (protoDescriptor as any)['nexus'] ?? (protoDescriptor as any)['xenosys'];
+    
+    // STRICT namespace access - no blind fallback
+    const nexusProto = (protoDescriptor as Record<string, unknown>)['nexus'];
+    
+    if (!nexusProto) {
+      throw new Error('Failed to load nexus proto - namespace "nexus" not found');
+    }
+    
+    const runtime = (nexusProto as Record<string, unknown>)['Runtime'];
+    
+    if (!runtime) {
+      throw new Error('Failed to load Runtime service from nexus package');
+    }
 
-    this.client = new nexusProto.Runtime(
-      endpoint,
-      grpc.credentials.createInsecure()
-    );
+    // Create credentials (TLS or insecure)
+    const credentials = this.createCredentials(config.tls);
+
+    // Create client using the service constructor
+    this.client = new runtime(
+      config.endpoint,
+      credentials
+    ) as NexusRuntimeClient;
 
     // Wait for connection
-    await this.waitForConnection();
+    await this.waitForConnection(config.connectionTimeout ?? 10000);
     this.connected = true;
+    this.failures = 0;
+    
+    console.log(`gRPC bridge connected to ${config.endpoint}`);
   }
 
   /**
    * Start as server (Python runtime connects to us)
    */
-  async startServer(port: number): Promise<void> {
+  async startServer(port: number, tlsConfig?: TLSConfig): Promise<void> {
     if (this.server) {
       throw new Error('Server already running');
     }
 
-    // Load proto file
-    const packageDefinition = protoLoader.loadSync(
-      resolve(__dirname, '../../proto/nexus.proto'),
-      {
-        keepCase: false,
-        longs: String,
-        enums: String,
-        defaults: true,
-        oneofs: true,
-      }
-    );
+    const protoPath = this.resolveProtoPath();
+    
+    if (!existsSync(protoPath)) {
+      throw new Error(`Proto file not found: ${protoPath}`);
+    }
+
+    const packageDefinition = protoLoader.loadSync(protoPath, {
+      keepCase: false,
+      longs: String,
+      enums: String,
+      defaults: true,
+      oneofs: true,
+      includeDirs: [resolve(__dirname, '../../proto')],
+    });
 
     const protoDescriptor = grpc.loadPackageDefinition(packageDefinition);
-    const nexusProto = (protoDescriptor as any)['nexus'] ?? (protoDescriptor as any)['xenosys'];
+    
+    // STRICT namespace access
+    const nexusProto = (protoDescriptor as Record<string, unknown>)['nexus'];
+    
+    if (!nexusProto) {
+      throw new Error('Failed to load nexus proto');
+    }
+    
+    const runtime = (nexusProto as Record<string, unknown>)['Runtime'];
+    
+    if (!runtime) {
+      throw new Error('Runtime service not found');
+    }
 
     this.server = new grpc.Server();
 
-    this.server.addService(nexusProto.Runtime.service, {
-      ExecuteAgent: this.handleExecuteAgent.bind(this),
-      StreamAgent: this.handleStreamAgent.bind(this),
-      GetStatus: this.handleGetStatus.bind(this),
-    });
+    this.server.addService(
+      runtime.service,
+      {
+        ExecuteAgent: this.handleExecuteAgent.bind(this),
+        StreamAgent: this.handleStreamAgent.bind(this),
+        GetStatus: this.handleGetStatus.bind(this),
+      }
+    );
+
+    const serverCreds = tlsConfig?.enabled 
+      ? this.createServerCredentials(tlsConfig)
+      : grpc.ServerCredentials.createInsecure();
 
     await new Promise<void>((resolve, reject) => {
       this.server!.bindAsync(
         `0.0.0.0:${port}`,
-        grpc.ServerCredentials.createInsecure(),
+        serverCreds,
         (error, port) => {
           if (error) {
             reject(error);
@@ -140,24 +254,34 @@ export class GRPCBridge {
   }
 
   /**
-   * Execute agent via gRPC
+   * Execute agent via gRPC using generated stub
    */
   async executeAgent(request: AgentRequest): Promise<AgentResponse> {
     if (!this.client) {
       throw new Error('Not connected to Python runtime');
     }
 
+    // Check circuit breaker
+    if (this.isCircuitOpen()) {
+      throw new Error('Circuit breaker is open - service unavailable');
+    }
+
+    // Convert to proto request
+    const protoRequest: ExecuteAgentRequest = this.toProtoRequest(request);
+
     return new Promise((resolve, reject) => {
-      this.client!.makeUnaryRequest(
-        'ExecuteAgent',
-        this.toProtoRequest,
-        this.fromProtoResponse,
-        request,
-        (error: grpc.ServiceError | null, response?: AgentResponse) => {
+      // Use generated stub method instead of makeUnaryRequest
+      this.client!.executeAgent(
+        protoRequest,
+        (error: grpc.ServiceError | null, response?: ExecuteAgentResponse) => {
           if (error) {
-            reject(error);
+            this.recordFailure();
+            reject(this.formatError(error));
+          } else if (response) {
+            this.resetFailures();
+            resolve(this.fromProtoResponse(response));
           } else {
-            resolve(response!);
+            reject(new Error('Empty response from gRPC'));
           }
         }
       );
@@ -165,50 +289,40 @@ export class GRPCBridge {
   }
 
   /**
-   * Stream agent execution
+   * Stream agent execution using generated stub
    */
   async *streamAgent(request: AgentRequest): AsyncGenerator<AgentResponse> {
     if (!this.client) {
       throw new Error('Not connected to Python runtime');
     }
 
-    const call = this.client.makeServerStreamingRequest(
-      'StreamAgent',
-      this.toProtoRequest,
-      this.fromProtoResponse,
-      request
-    );
+    const protoRequest = this.toProtoRequest(request);
 
-    yield* call;
+    // Use generated stub method instead of makeServerStreamingRequest
+    const call = this.client.streamAgent(protoRequest);
+
+    return yield* call;
   }
 
   /**
-   * Check health
+   * Check health using generated stub
    */
   async isHealthy(): Promise<boolean> {
     if (!this.client) return false;
 
-    const start = Date.now();
-
-    try {
-      return new Promise((resolve) => {
-        this.client!.makeUnaryRequest(
-          'GetStatus',
-          (req: unknown) => req,
-          (res: unknown) => res,
-          {},
-          (error: grpc.ServiceError | null, response?: { status: string }) => {
-            if (error || !response) {
-              resolve(false);
-            } else {
-              resolve(response.status === 'healthy');
-            }
+    return new Promise((resolve) => {
+      // Use generated stub method
+      this.client!.getStatus(
+        { node_id: 'gateway' },
+        (error: grpc.ServiceError | null, response?: StatusResponse) => {
+          if (error || !response) {
+            resolve(false);
+          } else {
+            resolve(response.status === 'healthy');
           }
-        );
-      });
-    } catch {
-      return false;
-    }
+        }
+      );
+    });
   }
 
   /**
@@ -216,7 +330,8 @@ export class GRPCBridge {
    */
   async disconnect(): Promise<void> {
     if (this.client) {
-      this.client.close();
+      // @ts-ignore - close method exists
+      this.client.close?.();
       this.client = null;
     }
 
@@ -226,6 +341,7 @@ export class GRPCBridge {
     }
 
     this.connected = false;
+    console.log('gRPC bridge disconnected');
   }
 
   // ========================================================================
@@ -233,26 +349,21 @@ export class GRPCBridge {
   // ========================================================================
 
   private handleExecuteAgent(
-    call: grpc.ServerUnaryCall<AgentRequest, AgentResponse>,
-    callback: (error: grpc.ServiceError | null, response?: AgentResponse) => void
+    call: grpc.ServerUnaryCall<ExecuteAgentRequest, ExecuteAgentResponse>,
+    callback: (error: grpc.ServiceError | null, response?: ExecuteAgentResponse) => void
   ): void {
     const request = this.fromProtoRequest(call.request);
 
-    // Forward to Python runtime (or handle locally)
     this.executeInRuntime(request)
       .then((response) => {
         callback(null, this.toProtoResponse(response));
       })
       .catch((error) => {
-        callback({
-          name: 'ExecuteError',
-          message: error instanceof Error ? error.message : 'Unknown error',
-          code: grpc.status.INTERNAL,
-        });
+        callback(this.createServiceError('ExecuteError', error), undefined);
       });
   }
 
-  private handleStreamAgent(call: grpc.ServerWritableStream<AgentRequest, AgentResponse>): void {
+  private handleStreamAgent(call: grpc.ServerWritableStream<ExecuteAgentRequest, ExecuteAgentResponse>): void {
     const request = this.fromProtoRequest(call.request);
 
     this.streamInRuntime(request)
@@ -263,17 +374,13 @@ export class GRPCBridge {
         call.end();
       }.bind(this))
       .catch((error) => {
-        call.emit('error', {
-          name: 'StreamError',
-          message: error instanceof Error ? error.message : 'Unknown error',
-          code: grpc.status.INTERNAL,
-        });
+        call.emit('error', this.createServiceError('StreamError', error));
       });
   }
 
   private handleGetStatus(
-    call: grpc.ServerUnaryCall<{ node_id: string }, { status: string; version: string }>,
-    callback: (error: grpc.ServiceError | null, response?: { status: string; version: string }) => void
+    call: grpc.ServerUnaryCall<StatusRequest, StatusResponse>,
+    callback: (error: grpc.ServiceError | null, response?: StatusResponse) => void
   ): void {
     callback(null, {
       status: 'healthy',
@@ -282,15 +389,10 @@ export class GRPCBridge {
   }
 
   // ========================================================================
-  // Runtime Integration
+  // Runtime Integration (placeholders)
   // ========================================================================
 
-  /**
-   * Execute agent in Python runtime (placeholder for actual integration)
-   */
   private async executeInRuntime(request: AgentRequest): Promise<AgentResponse> {
-    // In production, this would forward to Python runtime
-    // For now, return a mock response
     return {
       sessionId: request.sessionId,
       messageId: `msg-${Date.now()}`,
@@ -307,11 +409,7 @@ export class GRPCBridge {
     };
   }
 
-  /**
-   * Stream agent execution from Python runtime
-   */
   private async *streamInRuntime(request: AgentRequest): AsyncGenerator<AgentResponse> {
-    // In production, yield from Python runtime stream
     yield {
       sessionId: request.sessionId,
       messageId: `msg-${Date.now()}`,
@@ -331,52 +429,46 @@ export class GRPCBridge {
   // Serialization Helpers
   // ========================================================================
 
-  private toProtoRequest(request: AgentRequest): unknown {
+  private toProtoRequest(request: AgentRequest): ExecuteAgentRequest {
     return {
       session_id: request.sessionId,
       user_id: request.userId,
-      channel: request.channel,
       message: request.message,
-      attachments: request.attachments ?? [],
       context: request.context ? {
-        agent_id: request.context.agentId ?? '',
-        entity_id: request.context.entityId ?? '',
-        memory_filters: JSON.stringify(request.context.memoryFilters ?? {}),
-        system_prompt: request.context.systemPrompt ?? '',
+        agent_id: request.context.agentId,
+        entity_id: request.context.entityId,
+        system_prompt: request.context.systemPrompt,
       } : undefined,
       options: request.options ? {
-        max_iterations: request.options.maxIterations ?? 0,
-        timeout_ms: request.options.timeoutMs ?? 0,
-        temperature: request.options.temperature ?? 0,
-        model: request.options.model ?? '',
+        max_iterations: request.options.maxIterations,
+        timeout_ms: request.options.timeoutMs,
+        temperature: request.options.temperature,
+        model: request.options.model,
       } : undefined,
     };
   }
 
-  private fromProtoRequest(proto: unknown): AgentRequest {
-    const p = proto as Record<string, unknown>;
+  private fromProtoRequest(proto: ExecuteAgentRequest): AgentRequest {
     return {
-      sessionId: (p['session_id'] as string) ?? '',
-      userId: (p['user_id'] as string) ?? '',
-      channel: (p['channel'] as string) ?? '',
-      message: (p['message'] as string) ?? '',
-      attachments: (p['attachments'] as string[] | undefined) ?? [],
-      context: p['context'] ? {
-        agentId: (p['context'] as Record<string, unknown>)['agent_id'] as string | undefined,
-        entityId: (p['context'] as Record<string, unknown>)['entity_id'] as string | undefined,
-        memoryFilters: JSON.parse(((p['context'] as Record<string, unknown>)['memory_filters'] as string) ?? '{}'),
-        systemPrompt: (p['context'] as Record<string, unknown>)['system_prompt'] as string | undefined,
+      sessionId: proto.session_id ?? '',
+      userId: proto.user_id ?? '',
+      channel: '',
+      message: proto.message ?? '',
+      context: proto.context ? {
+        agentId: proto.context.agent_id,
+        entityId: proto.context.entity_id,
+        systemPrompt: proto.context.system_prompt,
       } : undefined,
-      options: p['options'] ? {
-        maxIterations: (p['options'] as Record<string, unknown>)['max_iterations'] as number | undefined,
-        timeoutMs: (p['options'] as Record<string, unknown>)['timeout_ms'] as number | undefined,
-        temperature: (p['options'] as Record<string, unknown>)['temperature'] as number | undefined,
-        model: (p['options'] as Record<string, unknown>)['model'] as string | undefined,
+      options: proto.options ? {
+        maxIterations: proto.options.max_iterations,
+        timeoutMs: proto.options.timeout_ms,
+        temperature: proto.options.temperature,
+        model: proto.options.model,
       } : undefined,
     };
   }
 
-  private toProtoResponse(response: AgentResponse): unknown {
+  private toProtoResponse(response: AgentResponse): ExecuteAgentResponse {
     return {
       session_id: response.sessionId,
       message_id: response.messageId,
@@ -390,49 +482,86 @@ export class GRPCBridge {
         latency_ms: response.metadata.latencyMs,
         iterations: response.metadata.iterations,
       } : undefined,
-      tool_calls: response.toolCalls?.map(tc => ({
-        name: tc.name,
-        args: JSON.stringify(tc.args),
-        result: tc.result ?? '',
-        error: tc.error ?? '',
-      })),
-      error: response.error ?? '',
+      error: response.error,
     };
   }
 
-  private fromProtoResponse(proto: unknown): AgentResponse {
-    const p = proto as Record<string, unknown>;
+  private fromProtoResponse(proto: ExecuteAgentResponse): AgentResponse {
     return {
-      sessionId: (p['session_id'] as string) ?? '',
-      messageId: (p['message_id'] as string) ?? '',
-      content: (p['content'] as string) ?? '',
-      done: (p['done'] as boolean) ?? false,
-      metadata: p['metadata'] ? {
-        model: (p['metadata'] as Record<string, unknown>)['model'] as string,
-        tokensIn: (p['metadata'] as Record<string, unknown>)['tokens_in'] as number,
-        tokensOut: (p['metadata'] as Record<string, unknown>)['tokens_out'] as number,
-        costUsd: (p['metadata'] as Record<string, unknown>)['cost_usd'] as number,
-        latencyMs: (p['metadata'] as Record<string, unknown>)['latency_ms'] as number,
-        iterations: (p['metadata'] as Record<string, unknown>)['iterations'] as number,
+      sessionId: proto.session_id ?? '',
+      messageId: proto.message_id ?? '',
+      content: proto.content ?? '',
+      done: proto.done ?? false,
+      metadata: proto.metadata ? {
+        model: proto.metadata.model ?? '',
+        tokensIn: proto.metadata.tokens_in ?? 0,
+        tokensOut: proto.metadata.tokens_out ?? 0,
+        costUsd: proto.metadata.cost_usd ?? 0,
+        latencyMs: proto.metadata.latency_ms ?? 0,
+        iterations: proto.metadata.iterations ?? 0,
       } : undefined,
-      toolCalls: (p['tool_calls'] as Array<Record<string, unknown>> | undefined)?.map(tc => ({
-        name: tc['name'] as string,
-        args: JSON.parse(tc['args'] as string),
-        result: tc['result'] as string | undefined,
-        error: tc['error'] as string | undefined,
-      })),
-      error: (p['error'] as string) ?? undefined,
+      error: proto.error,
     };
   }
 
-  private waitForConnection(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Connection timeout'));
-      }, 10000);
+  // ========================================================================
+  // Helper Methods
+  // ========================================================================
 
-      this.client!.waitForReady(Date.now() + 10000, (error) => {
-        clearTimeout(timeout);
+  private resolveProtoPath(): string {
+    const possiblePaths = [
+      resolve(__dirname, '../../proto/nexus.proto'),
+      resolve(__dirname, '../../../proto/nexus.proto'),
+      resolve(process.cwd(), 'proto/nexus.proto'),
+    ];
+
+    for (const p of possiblePaths) {
+      if (existsSync(p)) {
+        return p;
+      }
+    }
+
+    return possiblePaths[0];
+  }
+
+  private createCredentials(tlsConfig?: TLSConfig): grpc.ChannelCredentials {
+    if (!tlsConfig?.enabled) {
+      return grpc.credentials.createInsecure();
+    }
+
+    if (tlsConfig.caPath && existsSync(tlsConfig.caPath)) {
+      return grpc.credentials.createSsl(readFileSync(tlsConfig.caPath));
+    }
+    
+    return grpc.credentials.createSsl();
+  }
+
+  private createServerCredentials(tlsConfig: TLSConfig): grpc.ServerCredentials {
+    if (!tlsConfig.enabled || !tlsConfig.certPath || !tlsConfig.keyPath) {
+      return grpc.ServerCredentials.createInsecure();
+    }
+
+    return grpc.ServerCredentials.createSsl(
+      tlsConfig.caPath ? readFileSync(tlsConfig.caPath) : undefined,
+      [
+        {
+          cert_chain: readFileSync(tlsConfig.certPath),
+          private_key: readFileSync(tlsConfig.keyPath),
+        },
+      ],
+      false
+    );
+  }
+
+  private waitForConnection(timeout: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`Connection timeout after ${timeout}ms`));
+      }, timeout);
+
+      // @ts-ignore
+      this.client!.waitForReady(Date.now() + timeout, (error) => {
+        clearTimeout(timeoutId);
         if (error) {
           reject(error);
         } else {
@@ -441,4 +570,38 @@ export class GRPCBridge {
       });
     });
   }
+
+  private isCircuitOpen(): boolean {
+    if (this.failures >= this.circuitBreakerThreshold) {
+      const timeSinceFailure = Date.now() - this.lastFailure;
+      if (timeSinceFailure < this.circuitBreakerTimeout) {
+        return true;
+      }
+      this.failures = 0;
+    }
+    return false;
+  }
+
+  private recordFailure(): void {
+    this.failures++;
+    this.lastFailure = Date.now();
+  }
+
+  private resetFailures(): void {
+    this.failures = 0;
+  }
+
+  private formatError(error: grpc.ServiceError): Error {
+    return new Error(`gRPC Error [${error.code}]: ${error.message}`);
+  }
+
+  private createServiceError(name: string, error: unknown): grpc.ServiceError {
+    return {
+      name,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      code: grpc.status.INTERNAL,
+    };
+  }
 }
+
+export default GRPCBridge.getInstance();

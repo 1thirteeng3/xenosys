@@ -1,6 +1,6 @@
 """
 XenoSys Memory System - L3 Episodic Memory
-Built on OpenViking for session logging, interaction records, and raw files.
+Built on OpenViking for session logging, interaction records, and raw files via REST API.
 
 OpenViking: https://github.com/volcengine/OpenViking
 Records each interaction, log, and raw file with date and time.
@@ -8,13 +8,13 @@ Records each interaction, log, and raw file with date and time.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +86,12 @@ class RawFileRecord:
 
 
 # ============================================================================
-# OpenViking Integration
+# OpenViking HTTP Client
 # ============================================================================
 
 class OpenVikingClient:
     """
-    Client for OpenViking episodic memory operations.
+    Client for OpenViking episodic memory operations via HTTP.
     
     OpenViking provides:
     - Session logging with full history
@@ -104,27 +104,36 @@ class OpenVikingClient:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.endpoint = self.config.get("endpoint", "http://localhost:8080")
-        self.data_path = self.config.get("data_path", "./xenosys_episodic")
-        self._ensure_data_dir()
-        self._sessions: Dict[str, SessionRecord] = {}
-        self._interactions: Dict[str, List[InteractionRecord]] = {}
-        self._logs: List[LogRecord] = []
-        self._files: Dict[str, RawFileRecord] = {}
-        self._lock = asyncio.Lock()
+        self.api_key = self.config.get("api_key", "")
+        self.timeout = httpx.Timeout(self.config.get("timeout", 30.0))
+        self._client: Optional[httpx.AsyncClient] = None
     
-    def _ensure_data_dir(self) -> None:
-        """Ensure data directory exists."""
-        import os
-        os.makedirs(self.data_path, exist_ok=True)
-        os.makedirs(f"{self.data_path}/sessions", exist_ok=True)
-        os.makedirs(f"{self.data_path}/interactions", exist_ok=True)
-        os.makedirs(f"{self.data_path}/logs", exist_ok=True)
-        os.makedirs(f"{self.data_path}/files", exist_ok=True)
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client."""
+        if self._client is None:
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.AsyncClient(
+                base_url=self.endpoint,
+                timeout=self.timeout,
+                headers=headers,
+            )
+        return self._client
+    
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
     
     async def connect(self) -> bool:
-        """Connect to OpenViking (mock for now)."""
-        logger.info(f"Connected to OpenViking at {self.endpoint}")
-        return True
+        """Connect to OpenViking (verify health)."""
+        try:
+            client = await self._get_client()
+            response = await client.get("/health")
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Failed to connect to OpenViking: {e}")
+            return False
     
     # =========================================================================
     # Session Operations
@@ -138,27 +147,59 @@ class OpenVikingClient:
         user_id: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SessionRecord:
-        """Create a new session record."""
-        session = SessionRecord(
-            session_id=session_id,
-            agent_id=agent_id,
-            entity_id=entity_id,
-            user_id=user_id,
-            metadata=metadata or {},
-        )
-        
-        async with self._lock:
-            self._sessions[session_id] = session
-        
-        # Persist to disk
-        await self._persist_session(session)
-        
-        logger.info(f"Created session: {session_id}")
-        return session
+        """Create a new session record via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                "/api/v1/sessions",
+                json={
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "entity_id": entity_id,
+                    "user_id": user_id,
+                    "metadata": metadata or {},
+                }
+            )
+            
+            if response.status_code in (200, 201):
+                data = response.json()
+                return SessionRecord(
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    entity_id=entity_id,
+                    user_id=user_id,
+                    metadata=metadata or {},
+                )
+            raise Exception(f"Failed to create session: {response.status_code}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create session: {e}")
+            raise
     
     async def get_session(self, session_id: str) -> Optional[SessionRecord]:
         """Get a session by ID."""
-        return self._sessions.get(session_id)
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/api/v1/sessions/{session_id}")
+            
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            return SessionRecord(
+                session_id=data.get("session_id", ""),
+                agent_id=data.get("agent_id"),
+                entity_id=data.get("entity_id"),
+                user_id=data.get("user_id", ""),
+                status=data.get("status", "active"),
+                message_count=data.get("message_count", 0),
+                token_count=data.get("token_count", 0),
+                cost_usd=data.get("cost_usd", 0.0),
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to get session: {e}")
+            return None
     
     async def update_session(
         self,
@@ -169,24 +210,30 @@ class OpenVikingClient:
         cost_usd: Optional[float] = None,
     ) -> Optional[SessionRecord]:
         """Update session metrics."""
-        session = self._sessions.get(session_id)
-        if not session:
+        try:
+            client = await self._get_client()
+            update_data = {}
+            if status:
+                update_data["status"] = status
+            if message_count is not None:
+                update_data["message_count"] = message_count
+            if token_count is not None:
+                update_data["token_count"] = token_count
+            if cost_usd is not None:
+                update_data["cost_usd"] = cost_usd
+            
+            response = await client.patch(
+                f"/api/v1/sessions/{session_id}",
+                json=update_data
+            )
+            
+            if response.status_code == 200:
+                return await self.get_session(session_id)
             return None
-        
-        if status:
-            session.status = status
-            if status in ("completed", "failed"):
-                session.ended_at = datetime.utcnow()
-        
-        if message_count is not None:
-            session.message_count = message_count
-        if token_count is not None:
-            session.token_count = token_count
-        if cost_usd is not None:
-            session.cost_usd = cost_usd
-        
-        await self._persist_session(session)
-        return session
+            
+        except Exception as e:
+            logger.error(f"Failed to update session: {e}")
+            return None
     
     async def list_sessions(
         self,
@@ -196,18 +243,34 @@ class OpenVikingClient:
         limit: int = 100,
     ) -> List[SessionRecord]:
         """List sessions with filters."""
-        sessions = list(self._sessions.values())
-        
-        if user_id:
-            sessions = [s for s in sessions if s.user_id == user_id]
-        if agent_id:
-            sessions = [s for s in sessions if s.agent_id == agent_id]
-        if status:
-            sessions = [s for s in sessions if s.status == status]
-        
-        # Sort by started_at descending
-        sessions.sort(key=lambda s: s.started_at, reverse=True)
-        return sessions[:limit]
+        try:
+            client = await self._get_client()
+            params = {"limit": limit}
+            if user_id:
+                params["user_id"] = user_id
+            if agent_id:
+                params["agent_id"] = agent_id
+            if status:
+                params["status"] = status
+            
+            response = await client.get("/api/v1/sessions", params=params)
+            
+            if response.status_code != 200:
+                return []
+            
+            return [
+                SessionRecord(
+                    session_id=s.get("session_id", ""),
+                    agent_id=s.get("agent_id"),
+                    user_id=s.get("user_id", ""),
+                    status=s.get("status", "active"),
+                )
+                for s in response.json().get("sessions", [])
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to list sessions: {e}")
+            return []
     
     # =========================================================================
     # Interaction Operations
@@ -227,37 +290,48 @@ class OpenVikingClient:
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> InteractionRecord:
-        """Record an interaction message."""
+        """Record an interaction message via HTTP."""
         message_id = message_id or str(uuid4())
         
-        interaction = InteractionRecord(
-            session_id=session_id,
-            message_id=message_id,
-            role=role,
-            content=content,
-            model=model,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cost_usd=cost_usd,
-            latency_ms=latency_ms,
-            tool_calls=tool_calls or [],
-            metadata=metadata or {},
-        )
-        
-        # Store
-        async with self._lock:
-            if session_id not in self._interactions:
-                self._interactions[session_id] = []
-            self._interactions[session_id].append(interaction)
-        
-        # Persist
-        await self._persist_interaction(interaction)
-        
-        # Update session
-        await self._update_session_message_count(session_id)
-        
-        logger.info(f"Recorded interaction: {session_id}/{message_id}")
-        return interaction
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                "/api/v1/events",
+                json={
+                    "type": "interaction",
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "role": role,
+                    "content": content,
+                    "model": model,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "cost_usd": cost_usd,
+                    "latency_ms": latency_ms,
+                    "tool_calls": tool_calls or [],
+                    "metadata": metadata or {},
+                }
+            )
+            
+            if response.status_code in (200, 201):
+                return InteractionRecord(
+                    session_id=session_id,
+                    message_id=message_id,
+                    role=role,
+                    content=content,
+                    model=model,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cost_usd=cost_usd,
+                    latency_ms=latency_ms,
+                    tool_calls=tool_calls or [],
+                    metadata=metadata or {},
+                )
+            raise Exception(f"Failed to record interaction: {response.status_code}")
+            
+        except Exception as e:
+            logger.error(f"Failed to record interaction: {e}")
+            raise
     
     async def get_session_interactions(
         self,
@@ -265,8 +339,34 @@ class OpenVikingClient:
         limit: int = 1000,
     ) -> List[InteractionRecord]:
         """Get all interactions for a session."""
-        interactions = self._interactions.get(session_id, [])
-        return interactions[:limit]
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"/api/v1/sessions/{session_id}/interactions",
+                params={"limit": limit}
+            )
+            
+            if response.status_code != 200:
+                return []
+            
+            return [
+                InteractionRecord(
+                    session_id=i.get("session_id", ""),
+                    message_id=i.get("message_id", ""),
+                    role=i.get("role", "user"),
+                    content=i.get("content", ""),
+                    model=i.get("model"),
+                    tokens_in=i.get("tokens_in", 0),
+                    tokens_out=i.get("tokens_out", 0),
+                    cost_usd=i.get("cost_usd", 0.0),
+                    latency_ms=i.get("latency_ms", 0),
+                )
+                for i in response.json().get("interactions", [])
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to get interactions: {e}")
+            return []
     
     # =========================================================================
     # Log Operations
@@ -281,23 +381,36 @@ class OpenVikingClient:
         agent_id: Optional[str] = None,
         data: Optional[Dict[str, Any]] = None,
     ) -> LogRecord:
-        """Record a log entry."""
-        log = LogRecord(
-            level=level,
-            source=source,
-            session_id=session_id,
-            agent_id=agent_id,
-            message=message,
-            data=data or {},
-        )
-        
-        async with self._lock:
-            self._logs.append(log)
-        
-        # Persist
-        await self._persist_log(log)
-        
-        return log
+        """Record a log entry via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                "/api/v1/events",
+                json={
+                    "type": "log",
+                    "level": level,
+                    "source": source,
+                    "message": message,
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "data": data or {},
+                }
+            )
+            
+            if response.status_code in (200, 201):
+                return LogRecord(
+                    level=level,
+                    source=source,
+                    message=message,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    data=data or {},
+                )
+            raise Exception(f"Failed to record log: {response.status_code}")
+            
+        except Exception as e:
+            logger.error(f"Failed to record log: {e}")
+            raise
     
     async def query_logs(
         self,
@@ -309,159 +422,40 @@ class OpenVikingClient:
         limit: int = 1000,
     ) -> List[LogRecord]:
         """Query logs with filters."""
-        logs = self._logs.copy()
-        
-        if session_id:
-            logs = [l for l in logs if l.session_id == session_id]
-        if agent_id:
-            logs = [l for l in logs if l.agent_id == agent_id]
-        if level:
-            logs = [l for l in logs if l.level == level]
-        if start_time:
-            logs = [l for l in logs if l.timestamp >= start_time]
-        if end_time:
-            logs = [l for l in logs if l.timestamp <= end_time]
-        
-        # Sort by timestamp
-        logs.sort(key=lambda l: l.timestamp, reverse=True)
-        return logs[:limit]
-    
-    # =========================================================================
-    # Raw File Operations
-    # =========================================================================
-    
-    async def store_file(
-        self,
-        filename: str,
-        content: bytes,
-        content_type: str = "application/octet-stream",
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> RawFileRecord:
-        """Store a raw file."""
-        import hashlib
-        import os
-        
-        # Calculate checksum
-        checksum = hashlib.sha256(content).hexdigest()
-        
-        # Generate storage path
-        file_id = str(uuid4())
-        ext = os.path.splitext(filename)[1]
-        storage_path = f"{self.data_path}/files/{file_id}{ext}"
-        
-        # Write to disk
-        with open(storage_path, "wb") as f:
-            f.write(content)
-        
-        record = RawFileRecord(
-            filename=filename,
-            content_type=content_type,
-            size_bytes=len(content),
-            storage_path=storage_path,
-            checksum=checksum,
-            session_id=session_id,
-            metadata=metadata or {},
-        )
-        
-        async with self._lock:
-            self._files[file_id] = record
-        
-        logger.info(f"Stored file: {filename} ({len(content)} bytes)")
-        return record
-    
-    async def get_file(self, file_id: str) -> Optional[RawFileRecord]:
-        """Get a file record."""
-        return self._files.get(file_id)
-    
-    async def get_file_content(self, file_id: str) -> Optional[bytes]:
-        """Get file content."""
-        record = await self.get_file(file_id)
-        if not record:
-            return None
-        
         try:
-            with open(record.storage_path, "rb") as f:
-                return f.read()
-        except Exception:
-            return None
-    
-    # =========================================================================
-    # Persistence (Local JSON files for demo)
-    # =========================================================================
-    
-    async def _persist_session(self, session: SessionRecord) -> None:
-        """Persist session to disk."""
-        import json
-        from datetime import datetime
-        
-        path = f"{self.data_path}/sessions/{session.session_id}.json"
-        data = {
-            "id": str(session.id),
-            "session_id": session.session_id,
-            "agent_id": session.agent_id,
-            "entity_id": session.entity_id,
-            "user_id": session.user_id,
-            "status": session.status,
-            "started_at": session.started_at.isoformat(),
-            "ended_at": session.ended_at.isoformat() if session.ended_at else None,
-            "message_count": session.message_count,
-            "token_count": session.token_count,
-            "cost_usd": session.cost_usd,
-            "metadata": session.metadata,
-        }
-        
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    
-    async def _persist_interaction(self, interaction: InteractionRecord) -> None:
-        """Persist interaction to disk."""
-        import json
-        
-        path = f"{self.data_path}/interactions/{interaction.message_id}.json"
-        data = {
-            "id": str(interaction.id),
-            "session_id": interaction.session_id,
-            "message_id": interaction.message_id,
-            "role": interaction.role,
-            "content": interaction.content,
-            "model": interaction.model,
-            "tokens_in": interaction.tokens_in,
-            "tokens_out": interaction.tokens_out,
-            "cost_usd": interaction.cost_usd,
-            "latency_ms": interaction.latency_ms,
-            "created_at": interaction.created_at.isoformat(),
-            "tool_calls": interaction.tool_calls,
-            "metadata": interaction.metadata,
-        }
-        
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    
-    async def _persist_log(self, log: LogRecord) -> None:
-        """Persist log to disk."""
-        import json
-        
-        path = f"{self.data_path}/logs/{log.id}.json"
-        data = {
-            "id": str(log.id),
-            "timestamp": log.timestamp.isoformat(),
-            "level": log.level,
-            "source": log.source,
-            "session_id": log.session_id,
-            "agent_id": log.agent_id,
-            "message": log.message,
-            "data": log.data,
-        }
-        
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    
-    async def _update_session_message_count(self, session_id: str) -> None:
-        """Update session message count."""
-        session = self._sessions.get(session_id)
-        if session:
-            session.message_count = len(self._interactions.get(session_id, []))
+            client = await self._get_client()
+            params = {"limit": limit}
+            if session_id:
+                params["session_id"] = session_id
+            if agent_id:
+                params["agent_id"] = agent_id
+            if level:
+                params["level"] = level
+            if start_time:
+                params["start_time"] = start_time.isoformat()
+            if end_time:
+                params["end_time"] = end_time.isoformat()
+            
+            response = await client.get("/api/v1/logs", params=params)
+            
+            if response.status_code != 200:
+                return []
+            
+            return [
+                LogRecord(
+                    level=l.get("level", "info"),
+                    source=l.get("source", ""),
+                    message=l.get("message", ""),
+                    session_id=l.get("session_id"),
+                    agent_id=l.get("agent_id"),
+                    data=l.get("data", {}),
+                )
+                for l in response.json().get("logs", [])
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to query logs: {e}")
+            return []
 
 
 # ============================================================================
@@ -470,10 +464,10 @@ class OpenVikingClient:
 
 class EpisodicMemoryStore:
     """
-    L3 Episodic Memory store using OpenViking.
+    L3 Episodic Memory store using OpenViking via HTTP.
     
     Provides:
-    - Session history with full context
+    - Session history with full context via REST API
     - Interaction logging with token/cost tracking
     - Debug log aggregation
     - Raw file storage
@@ -486,6 +480,10 @@ class EpisodicMemoryStore:
     async def initialize(self) -> bool:
         """Initialize the episodic store."""
         return await self.openviking.connect()
+    
+    async def close(self) -> None:
+        """Close the store."""
+        await self.openviking.close()
     
     # Session operations
     async def create_session(
@@ -575,28 +573,6 @@ class EpisodicMemoryStore:
             **kwargs,
         )
     
-    # File operations
-    async def store_file(
-        self,
-        filename: str,
-        content: bytes,
-        content_type: str = "application/octet-stream",
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> RawFileRecord:
-        """Store a file."""
-        return await self.openviking.store_file(
-            filename=filename,
-            content=content,
-            content_type=content_type,
-            session_id=session_id,
-            metadata=metadata,
-        )
-    
-    async def get_file(self, file_id: str) -> Optional[RawFileRecord]:
-        """Get a file."""
-        return await self.openviking.get_file(file_id)
-    
     # Timeline operations
     async def get_timeline(
         self,
@@ -610,7 +586,6 @@ class EpisodicMemoryStore:
         messages = await self.get_messages(session_id)
         logs = await self.query_logs(session_id=session_id)
         
-        # Combine and sort by timestamp
         timeline = []
         
         for msg in messages:
@@ -618,7 +593,7 @@ class EpisodicMemoryStore:
                 "type": "message",
                 "timestamp": msg.created_at,
                 "role": msg.role,
-                "content": msg.content[:200],  # Truncate
+                "content": msg.content[:200],
                 "tokens": msg.tokens_in + msg.tokens_out,
             })
         
