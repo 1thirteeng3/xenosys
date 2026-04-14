@@ -3,7 +3,7 @@
  * 
  * Split-pane layout:
  * - Left (60%): Unified chat with agent
- * - Right (40%): Log Terminal with auto-scroll
+ * - Right (40%): Log Terminal with CULLING (max 500 logs)
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -11,6 +11,9 @@ import { Send, Bot, User, Terminal } from 'lucide-react';
 import { clsx } from 'clsx';
 import { ThoughtBlock, MCPWidgetRenderer, ToolPayload } from '../atomic';
 import { useUIStore } from '../../store/uiStore';
+
+// Log CULLING LIMIT - prevents memory exhaustion
+const MAX_LOGS = 500;
 
 interface ChatMessage {
   id: string;
@@ -28,6 +31,15 @@ interface LogEntry {
   level: 'info' | 'warn' | 'error';
   message: string;
 }
+
+// Helper to cull logs to max limit
+const cullLogs = (logs: LogEntry[]): LogEntry[] => {
+  if (logs.length > MAX_LOGS) {
+    // Keep only last MAX_LOGS entries
+    return logs.slice(-MAX_LOGS);
+  }
+  return logs;
+};
 
 const INITIAL_LOGS: LogEntry[] = [
   { id: '1', timestamp: '2024-01-15T10:23:01Z', level: 'info', message: '[Gateway] Initialized on 127.0.0.1:3000' },
@@ -86,13 +98,13 @@ export const ArenaZone: React.FC = () => {
       };
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Add log entry
-      setLogs((prev) => [...prev, {
+      // Add log entry (with CULLING to prevent memory exhaustion)
+      setLogs((prev) => cullLogs([...prev, {
         id: Date.now().toString(),
         timestamp: new Date().toISOString(),
         level: 'info',
         message: `[Agent] Processed request in 234ms`,
-      }]);
+      }]));
 
       // Complete processing
       setTimeout(() => {
