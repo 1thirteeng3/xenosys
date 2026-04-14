@@ -9,6 +9,7 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { websocket } from 'hono/ws';
 import { v4 as uuid } from 'uuid';
+import * as os from 'os';
 import pino from 'pino';
 
 import { eventBus, EventBus } from './event-bus.js';
@@ -82,15 +83,37 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// Health check endpoint
+// Health check endpoint - FIX: Added hardware telemetry
 app.get('/health', (c) => {
   const uptime = (Date.now() - state.startTime) / 1000;
+  
+  // Collect vital hardware data from Node (representative of local host)
+  const freeMem = os.freemem();
+  const totalMem = os.totalmem();
+  const usedMemPercent = ((totalMem - freeMem) / totalMem) * 100;
+  const cpus = os.cpus();
+  let cpuIdle = 0;
+  let cpuTotal = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) {
+      cpuTotal += cpu.times[type as keyof typeof cpu.times];
+    }
+    cpuIdle += cpu.times.idle;
+  }
+  const cpuUsagePercent = ((cpuTotal - cpuIdle) / cpuTotal) * 100;
+  
   return c.json({
     status: 'healthy',
     nodeId: state.nodeId,
     uptime,
     sessions: state.sessions.size,
     connections: state.connectedClients.size,
+    hardware: {
+      ramUsagePercent: usedMemPercent.toFixed(2),
+      totalRamGB: (totalMem / 1024 / 1024 / 1024).toFixed(2),
+      cpuUsagePercent: cpuUsagePercent.toFixed(2),
+      cpuCores: cpus.length,
+    },
     version: '1.0.0',
   });
 });

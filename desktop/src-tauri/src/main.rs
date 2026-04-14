@@ -511,21 +511,28 @@ async fn download_cloudflared() -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
     
-    // Write to file
-    std::fs::write(&cloudflared_path, &bytes)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    // FIX: Atomic write - download to temp file first, then rename
+    // This prevents corruption if download fails midway
+    let tmp_path = format!("{}.tmp", cloudflared_path);
     
-    // Make executable (Unix only)
+    std::fs::write(&tmp_path, &bytes)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    
+    // Make executable (Unix only) - must do this BEFORE rename
     #[cfg(not(target_os = "windows"))]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&cloudflared_path)
+        let mut perms = std::fs::metadata(&tmp_path)
             .map_err(|e| format!("Failed to get permissions: {}", e))?
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&cloudflared_path, perms)
+        std::fs::set_permissions(&tmp_path, perms)
             .map_err(|e| format!("Failed to set permissions: {}", e))?;
     }
+    
+    // Atomic rename - if this fails, the final file doesn't exist
+    std::fs::rename(&tmp_path, &cloudflared_path)
+        .map_err(|e| format!("Failed to install cloudflared: {}", e))?;
     
     info!("cloudflared downloaded to {}", cloudflared_path);
     Ok(cloudflared_path)
@@ -546,12 +553,22 @@ async fn start_tunnel(state: tauri::State<'_, AppState>, app_handle: tauri::AppH
     let store = app_handle.store(".settings.dat")
         .map_err(|e| format!("Store error: {}", e))?;
     
+    // FIX: Get BOTH token AND URL from store
+    // Zero Trust tunnels don't output URL to stderr - it's configured in Cloudflare dashboard
     let cf_token = store.get("cloudflare_token")
+        .and_then(|v| v.as_str().map(|s| s.to_string()));
+    let cf_url = store.get("cloudflare_url")
         .and_then(|v| v.as_str().map(|s| s.to_string()));
     
     let token = match cf_token {
         Some(t) if !t.is_empty() => t,
         _ => return Err("UNAUTHORIZED: Cloudflare Zero Trust Token not configured. Please enter the token in Network settings.".to_string()),
+    };
+    
+    // FIX: Require URL to be configured (Zero Trust tunnels have static URLs)
+    let tunnel_url = match cf_url {
+        Some(u) if !u.is_empty() => u,
+        _ => return Err("TUNNEL URL not configured. Define your Cloudflare domain in Network settings.".to_string()),
     };
     
     let cloudflared_path = get_cloudflared_path();
@@ -560,56 +577,15 @@ async fn start_tunnel(state: tauri::State<'_, AppState>, app_handle: tauri::AppH
     }
     
     // 3. START THE AUTHENTICATED TUNNEL
-    // The run --token command does not depend on Quick Tunnels and is 100% stable for production
+    // Run without waiting for output (authenticated tunnels don't output URL)
     let mut child = Command::new(&cloudflared_path)
         .args(&["tunnel", "--no-autoupdate", "run", "--token", &token])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::null())  // FIX: Don't capture - it's not needed
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to start Cloudflare tunnel: {}", e))?;
     
-    // Parse output to get tunnel URL from stderr (authenticated tunnels log to stderr)
-    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
-    let mut reader = BufReader::new(stderr).lines();
-    
-    let mut tunnel_url: Option<String> = None;
-    
-    // Read output to find the URL
-    let timeout = std::time::Duration::from_secs(30);
-    let start = std::time::Instant::now();
-    
-    while start.elapsed() < timeout {
-        tokio::select! {
-            line = reader.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        info!("[cloudflared] {}", line);
-                        // Authenticated tunnels output: https://*.cfargotunnel.com
-                        if line.starts_with("https://") && (line.contains("cfargotunnel.com") || line.contains("cloudflare.com")) {
-                            tunnel_url = Some(line.clone());
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {}
-        }
-    }
-    
-    // If URL not found in output, construct from known pattern
-    let tunnel_url = match tunnel_url {
-        Some(url) => url,
-        None => {
-            // For authenticated tunnels, we can still report success
-            // The user can get the URL from Cloudflare Dashboard
-            info!("Tunnel started but URL not captured from output");
-            "https://".to_string()
-        }
-    };
-    
-    // Update state
+    // Use the URL from the store directly (Zero Trust tunnels have static URLs)
     let mut tunnel_state = state.tunnel.lock().map_err(|e| e.to_string())?;
     tunnel_state.running = true;
     tunnel_state.url = Some(tunnel_url.clone());
