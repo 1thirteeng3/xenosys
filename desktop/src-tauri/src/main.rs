@@ -313,13 +313,33 @@ async fn install_ollama() -> Result<String, String> {
             .await;
     }
     
-    // Wait for Ollama to start
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    // Polling resiliente: Aguarda até 60 segundos o Ollama responder na porta 11434
+    info!("Aguardando a inicialização do motor Ollama...");
+    let mut ready = false;
+    let timeout = std::time::Duration::from_secs(60);
+    let start = std::time::Instant::now();
     
-    // Pull the model
-    let _ = Command::new("ollama").args(&["pull", "llama3.1:8b"]).output().await;
+    while start.elapsed() < timeout {
+        // Utiliza a função check_service existente
+        if check_service("http://localhost:11434/").await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
     
-    Ok("Ollama installed and model pulled".to_string())
+    if !ready {
+        return Err("Timeout: O serviço do Ollama não iniciou após 60 segundos.".to_string());
+    }
+    
+    info!("Ollama online. Iniciando download do modelo LLM (Isto pode levar alguns minutos)...");
+    let _ = Command::new("ollama")
+        .args(&["pull", "llama3.1:8b"])
+        .output()
+        .await
+        .map_err(|e| format!("Falha ao executar o pull do modelo: {}", e))?;
+    
+    Ok("Ollama instalado, serviço inicializado e modelo cacheado com sucesso".to_string())
 }
 
 #[tauri::command]
