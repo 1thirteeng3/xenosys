@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::path::PathBuf;
 use tauri::Manager;
+use tauri_plugin_store::StoreExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -85,6 +86,8 @@ fn main() {
                 process: None,
             }),
         })
+        // Initialize secure store for API keys
+        .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             start_sidecars,
             stop_sidecars,
@@ -92,11 +95,9 @@ fn main() {
             check_ollama,
             install_ollama,
             configure_mode,
-            start_tunnel,      // NEW: Start Cloudflare tunnel
-            stop_tunnel,       // NEW: Stop tunnel
-            get_tunnel_url,    // NEW: Get current tunnel URL
-            generate_pairing_qr, // NEW: Generate QR for mobile pairing
-            download_cloudflared // NEW: Download cloudflared binary
+            save_api_key,      // Secure API key storage
+            load_api_key,      // Load API key for sidecars
+            download_cloudflared
         ])
         .setup(|app| {
             info!("Tauri app setup complete");
@@ -149,19 +150,35 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
         sidecar_state.gateway_running = true;
     }
     
-    // Start Core sidecar
+    // Start Core sidecar with API key from secure store
     if !sidecar_state.core_running {
         let core_path = get_sidecar_path("core");
         info!("Starting core from: {}", core_path);
         
-        let mut child = Command::new(&core_path)
-            .env("TAURI_ENV", "true")
-            .env("GRPC_HOST", "127.0.0.1")
-            .env("HOST", "127.0.0.1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start core: {}", e))?;
+        // Check if API key available from environment (set from store at app init)
+        let api_key = std::env::var("OPENAI_API_KEY").ok();
+        
+        let mut child = if let Some(key) = api_key {
+            info!("[Core] Using OPENAI_API_KEY from secure store");
+            Command::new(&core_path)
+                .env("TAURI_ENV", "true")
+                .env("GRPC_HOST", "127.0.0.1")
+                .env("HOST", "127.0.0.1")
+                .env("OPENAI_API_KEY", key)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to start core: {}", e))?
+        } else {
+            Command::new(&core_path)
+                .env("TAURI_ENV", "true")
+                .env("GRPC_HOST", "127.0.0.1")
+                .env("HOST", "127.0.0.1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to start core: {}", e))?
+        };
         
         // Log output in background
         if let Some(stdout) = child.stdout.take() {
@@ -372,6 +389,49 @@ fn get_cloudflared_path() -> String {
     let cloudflared = base_dir.join("cloudflared");
     
     cloudflared.to_string_lossy().to_string()
+}
+
+// ============================================================================
+// Cloudflare Tunnel Commands
+// ============================================================================
+
+#[tauri::command]
+async fn save_api_key(key_name: String, key_value: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    info!("Saving API key: {}", key_name);
+    
+    // Get or create store
+    let store = app_handle.store(".settings.dat")
+        .map_err(|e| format!("Failed to open store: {}", e))?;
+    
+    // Save the key
+    store.set(&key_name, &key_value);
+    store.save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+    
+    // Set env var for sidecar processes
+    std::env::set_var(&key_name, &key_value);
+    
+    info!("API key {} saved to secure store", key_name);
+    Ok(format!("API key {} saved", key_name))
+}
+
+#[tauri::command]
+async fn load_api_key(key_name: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+    info!("Loading API key: {}", key_name);
+    
+    // Get store
+    let store = app_handle.store(".settings.dat")
+        .map_err(|e| format!("Failed to open store: {}", e))?;
+    
+    // Get the key
+    let value = store.get(&key_name)
+        .ok_or(format!("Key {} not found", key_name))?
+        .as_str()
+        .ok_or("Invalid key value")?
+        .to_string();
+    
+    info!("API key {} loaded", key_name);
+    Ok(value)
 }
 
 #[tauri::command]
