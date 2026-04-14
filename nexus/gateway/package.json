@@ -31,7 +31,7 @@
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
     "build": "tsc && tsc-alias",
-    "postbuild": "node -e \"const fs=require('fs');const p=require('path');const src='src/proto';const dst='dist/proto';if(fs.existsSync(src)){if(!fs.existsSync(dst))fs.mkdirSync(dst,{recursive:true});fs.readdirSync(src).forEach(f=>fs.copyFileSync(p.join(src,f),p.join(dst,f)));console.log('Copied proto files')}\"",
+    "postbuild": "node -e \"const fs=require('fs'); fs.cpSync('src/proto', 'dist/proto', {recursive: true}); console.log('✅ Protos copied recursively')\"",
     "start": "node dist/gateway/server.js",
     "dev": "tsx watch src/gateway/server.ts",
     "test": "vitest",

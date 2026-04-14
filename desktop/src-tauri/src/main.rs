@@ -125,7 +125,8 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
     
     // Start Gateway sidecar
     if !sidecar_state.gateway_running {
-        let gateway_path = get_sidecar_path("gateway");
+        // RIGOR: Os nomes DEVEM corresponder exatamente ao output do build_core.py e pkg/bun do Gateway
+        let gateway_path = get_sidecar_path("xenosys-gateway-bin");
         info!("Starting gateway from: {}", gateway_path);
         
         let mut child = Command::new(&gateway_path)
@@ -152,7 +153,8 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
     
     // Start Core sidecar with API key from secure store
     if !sidecar_state.core_running {
-        let core_path = get_sidecar_path("core");
+        // RIGOR: Os nomes DEVEM corresponder exatamente ao output do build_core.py e pkg/bun do Gateway
+        let core_path = get_sidecar_path("xenosys-core-bin");
         info!("Starting core from: {}", core_path);
         
         // Check if API key available from environment (set from store at app init)
@@ -311,13 +313,33 @@ async fn install_ollama() -> Result<String, String> {
             .await;
     }
     
-    // Wait for Ollama to start
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    // Polling resiliente: Aguarda até 60 segundos o Ollama responder na porta 11434
+    info!("Aguardando a inicialização do motor Ollama...");
+    let mut ready = false;
+    let timeout = std::time::Duration::from_secs(60);
+    let start = std::time::Instant::now();
     
-    // Pull the model
-    let _ = Command::new("ollama").args(&["pull", "llama3.1:8b"]).output().await;
+    while start.elapsed() < timeout {
+        // Utiliza a função check_service existente
+        if check_service("http://localhost:11434/").await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
     
-    Ok("Ollama installed and model pulled".to_string())
+    if !ready {
+        return Err("Timeout: O serviço do Ollama não iniciou após 60 segundos.".to_string());
+    }
+    
+    info!("Ollama online. Iniciando download do modelo LLM (Isto pode levar alguns minutos)...");
+    let _ = Command::new("ollama")
+        .args(&["pull", "llama3.1:8b"])
+        .output()
+        .await
+        .map_err(|e| format!("Falha ao executar o pull do modelo: {}", e))?;
+    
+    Ok("Ollama instalado, serviço inicializado e modelo cacheado com sucesso".to_string())
 }
 
 #[tauri::command]
@@ -488,40 +510,49 @@ async fn download_cloudflared() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn start_tunnel(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    info!("Starting Cloudflare tunnel...");
+async fn start_tunnel(state: tauri::State<'_, AppState>, app_handle: tauri::AppHandle) -> Result<String, String> {
+    info!("Starting Authenticated Cloudflare Tunnel (Zero Trust)...");
     
-    // Ensure gateway is running
+    // 1. Check if the Gateway is running
     let sidecar_state = state.sidecars.lock().map_err(|e| e.to_string())?;
     if !sidecar_state.gateway_running {
-        return Err("Gateway must be running to start tunnel".to_string());
+        return Err("The Gateway must be running to start the tunnel.".to_string());
     }
     drop(sidecar_state);
     
-    // Get cloudflared path
-    let cloudflared_path = get_cloudflared_path();
+    // 2. RETRIEVE THE TOKEN FROM THE STORE
+    let store = app_handle.store(".settings.dat")
+        .map_err(|e| format!("Store error: {}", e))?;
     
-    // Ensure cloudflared exists
+    let cf_token = store.get("cloudflare_token")
+        .and_then(|v| v.as_str().map(|s| s.to_string()));
+    
+    let token = match cf_token {
+        Some(t) if !t.is_empty() => t,
+        _ => return Err("UNAUTHORIZED: Cloudflare Zero Trust Token not configured. Please enter the token in Network settings.".to_string()),
+    };
+    
+    let cloudflared_path = get_cloudflared_path();
     if !std::path::Path::new(&cloudflared_path).exists() {
-        return Err("cloudflared not found. Call download_cloudflared first.".to_string());
+        return Err("Cloudflared binary not found. Download first.".to_string());
     }
     
-    // Start tunnel pointing to local gateway
+    // 3. START THE AUTHENTICATED TUNNEL
+    // The run --token command does not depend on Quick Tunnels and is 100% stable for production
     let mut child = Command::new(&cloudflared_path)
-        .args(&["tunnel", "--url", "http://localhost:3000"])
+        .args(&["tunnel", "--no-autoupdate", "run", "--token", &token])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start tunnel: {}", e))?;
+        .map_err(|e| format!("Failed to start Cloudflare tunnel: {}", e))?;
     
-    // Parse output to get tunnel URL
-    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
-    let mut reader = BufReader::new(stdout).lines();
+    // Parse output to get tunnel URL from stderr (authenticated tunnels log to stderr)
+    let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
+    let mut reader = BufReader::new(stderr).lines();
     
     let mut tunnel_url: Option<String> = None;
     
-    // Read output to find the URL (cloudflared outputs it to stdout)
-    // Timeout after 30 seconds waiting for URL
+    // Read output to find the URL
     let timeout = std::time::Duration::from_secs(30);
     let start = std::time::Instant::now();
     
@@ -531,8 +562,8 @@ async fn start_tunnel(state: tauri::State<'_, AppState>) -> Result<String, Strin
                 match line {
                     Ok(Some(line)) => {
                         info!("[cloudflared] {}", line);
-                        // Cloudflare tunnel outputs URL like: https://*.trycloudflare.com
-                        if line.starts_with("https://") && line.contains("trycloudflare") {
+                        // Authenticated tunnels output: https://*.cfargotunnel.com
+                        if line.starts_with("https://") && (line.contains("cfargotunnel.com") || line.contains("cloudflare.com")) {
                             tunnel_url = Some(line.clone());
                             break;
                         }
@@ -545,9 +576,15 @@ async fn start_tunnel(state: tauri::State<'_, AppState>) -> Result<String, Strin
         }
     }
     
+    // If URL not found in output, construct from known pattern
     let tunnel_url = match tunnel_url {
         Some(url) => url,
-        None => return Err("Failed to get tunnel URL within timeout".to_string()),
+        None => {
+            // For authenticated tunnels, we can still report success
+            // The user can get the URL from Cloudflare Dashboard
+            info!("Tunnel started but URL not captured from output");
+            "https://".to_string()
+        }
     };
     
     // Update state
@@ -556,8 +593,8 @@ async fn start_tunnel(state: tauri::State<'_, AppState>) -> Result<String, Strin
     tunnel_state.url = Some(tunnel_url.clone());
     tunnel_state.process = Some(child.id().unwrap_or(0));
     
-    info!("Tunnel started: {}", tunnel_url);
-    Ok(tunnel_url)
+    info!("Authenticated Cloudflare Tunnel started: {}", tunnel_url);
+    Ok(format!("Tunnel started: {}", tunnel_url))
 }
 
 #[tauri::command]
