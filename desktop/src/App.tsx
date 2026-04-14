@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MainLayout } from './components/layout/MainLayout';
 import { ArenaZone } from './components/zones/ArenaZone';
 import { GovernanceZone } from './components/zones/GovernanceZone';
+import { SettingsZone } from './components/zones/SettingsZone';
 import { NetworkSettings } from './components/NetworkSettings';
 import { useUIStore } from './store/uiStore';
 import './styles.css';
@@ -31,6 +32,8 @@ const ZoneRouter: React.FC = () => {
       return <ArenaZone />;
     case 'governance':
       return <GovernanceZone />;
+    case 'settings':
+      return <SettingsZone />;
     case 'network':
       return (
         <div className="p-6">

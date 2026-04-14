@@ -6,19 +6,24 @@
  * - connecting: Cyan - Attempting to connect
  * - disconnected: Red - Connection lost
  * 
- * Display format: [Status Dot] "Status Text" [optional: latency]
+ * Features:
+ * - Flash animation when transitioning to Local (cyan to green)
  */
 
-import React from 'react';
-import { Wifi, WifiOff, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef } from 'react';
 import { clsx } from 'clsx';
+import { 
+  Wifi, 
+  WifiOff, 
+  Loader2 
+} from 'lucide-react';
 
 export type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
 interface ConnectionStatusProps {
   state: ConnectionState;
   label?: string;
-  latency?: number; // in ms
+  latency?: number;
   showLatency?: boolean;
   className?: string;
 }
@@ -30,6 +35,21 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
   showLatency = false,
   className,
 }) => {
+  const flashRef = useRef<HTMLDivElement>(null);
+  const prevState = useRef(state);
+
+  // Flash effect on state transition (Cloud → Local)
+  useEffect(() => {
+    if (prevState.current === 'connecting' && state === 'connected' && flashRef.current) {
+      // Trigger flash animation
+      flashRef.current.classList.add('animate-flash-green');
+      setTimeout(() => {
+        flashRef.current?.classList.remove('animate-flash-green');
+      }, 500);
+    }
+    prevState.current = state;
+  }, [state]);
+
   const getIcon = () => {
     switch (state) {
       case 'connected':
@@ -44,23 +64,27 @@ export const ConnectionStatus: React.FC<ConnectionStatusProps> = ({
   const getLabel = () => {
     if (label) return label;
     switch (state) {
-      case 'connected':
-        return 'Connected';
-      case 'connecting':
-        return 'Connecting...';
-      case 'disconnected':
-        return 'Disconnected';
+      case 'connected': return 'Connected';
+      case 'connecting': return 'Connecting...';
+      case 'disconnected': return 'Disconnected';
     }
   };
 
   return (
-    <div className={clsx('connection-indicator', state, className)}>
+    <div 
+      ref={flashRef}
+      className={clsx(
+        'flex items-center gap-2 px-3 py-1.5 rounded-full text-sm transition-all duration-200',
+        state === 'connected' && 'bg-xeno-accent-active/20 text-xeno-accent-active',
+        state === 'connecting' && 'bg-xeno-accent-cloud/20 text-xeno-accent-cloud',
+        state === 'disconnected' && 'bg-xeno-accent-error/20 text-xeno-accent-error',
+        className
+      )}
+    >
       {getIcon()}
       <span>{getLabel()}</span>
       {showLatency && latency !== undefined && (
-        <span className="text-xs opacity-70 ml-1">
-          {latency}ms
-        </span>
+        <span className="text-xs opacity-70 ml-1">{latency}ms</span>
       )}
     </div>
   );
