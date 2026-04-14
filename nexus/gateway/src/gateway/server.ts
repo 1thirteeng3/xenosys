@@ -23,7 +23,10 @@ import { GRPCBridge } from '../grpc/bridge.js';
 
 const config = {
   port: parseInt(process.env['PORT'] ?? '3000', 10),
-  host: process.env['HOST'] ?? '0.0.0.0',
+  // STRICTNESS: If TAURI_ENV is set (Desktop), force 127.0.0.1. Otherwise, allow 0.0.0.0 for Docker/VPS.
+  // This prevents agent hijacking via local network in Desktop mode.
+  isDesktop: process.env['TAURI_ENV'] === 'true',
+  host: process.env['HOST'] ?? (process.env['TAURI_ENV'] === 'true' ? '127.0.0.1' : '0.0.0.0'),
   logLevel: (process.env['LOG_LEVEL'] ?? 'info') as pino.Level,
   grpcEndpoint: process.env['GRPC_ENDPOINT'] ?? 'localhost:50051',
   wsPath: '/ws',
@@ -368,6 +371,13 @@ async function startServer() {
     port: config.port,
     hostname: config.host,
   });
+
+  // Security warning for exposed network interfaces
+  if (config.host === '0.0.0.0' && !config.isDesktop) {
+    logger$.warn('WARNING: Server listening on all network interfaces (0.0.0.0). Confirm this is an isolated Docker/VPS environment.');
+  } else if (config.host === '127.0.0.1') {
+    logger$.info('Server bound to localhost only (Desktop mode - secure)');
+  }
 
   logger$.info(`Server listening on ${config.host}:${config.port}`);
   logger$.info(`API endpoint: http://${config.host}:${config.port}${config.apiPrefix}`);

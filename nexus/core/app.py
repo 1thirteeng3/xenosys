@@ -4,6 +4,7 @@ XenoSys - Main Application Entry Point
 
 import asyncio
 import logging
+import os
 import signal
 from typing import Optional
 
@@ -14,6 +15,56 @@ from .llmops.telemetry import get_telemetry_exporter
 from .messaging import get_message_broker, initialize_broker, shutdown_broker
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Configuration - Network Binding Security
+# ============================================================================
+
+def get_grpc_bind_address() -> str:
+    """
+    Get the gRPC server bind address based on execution context.
+    
+    Desktop mode (Tauri): Bind to 127.0.0.1 to prevent agent hijacking.
+    Docker/VPS mode: Bind to 0.0.0.0 (or GRPC_HOST env) for reverse proxy.
+    """
+    port = os.environ.get("GRPC_PORT", "50051")
+    is_desktop = os.environ.get("TAURI_ENV") == "true"
+    
+    if is_desktop:
+        # Desktop mode: Bind to localhost only - secure
+        host = "127.0.0.1"
+        logger.info("gRPC binding to localhost only (Desktop mode - secure)")
+    else:
+        # Docker/VPS mode: Allow external binding
+        host = os.environ.get("GRPC_HOST", "0.0.0.0")
+        if host == "0.0.0.0":
+            logger.warning(
+                "WARNING: gRPC server binding to all interfaces (0.0.0.0). "
+                "Confirm this is an isolated Docker/VPS environment."
+            )
+    
+    return f"{host}:{port}"
+
+
+def get_http_bind_host() -> str:
+    """
+    Get the HTTP server bind host based on execution context.
+    
+    Desktop mode: Bind to 127.0.0.1.
+    Docker/VPS mode: Bind to 0.0.0.0.
+    """
+    is_desktop = os.environ.get("TAURI_ENV") == "true"
+    
+    if is_desktop:
+        return "127.0.0.1"  # Desktop: localhost only - secure
+    else:
+        return os.environ.get("HOST", "0.0.0.0")  # Docker/VPS: allow external
+
+
+# ============================================================================
+// Application
+// ============================================================================
 
 
 class XenoSysApp:

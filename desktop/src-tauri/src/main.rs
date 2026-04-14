@@ -128,6 +128,9 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
         info!("Starting gateway from: {}", gateway_path);
         
         let mut child = Command::new(&gateway_path)
+            .env("TAURI_ENV", "true")
+            .env("HOST", "127.0.0.1")
+            .env("GRPC_HOST", "127.0.0.1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -152,6 +155,9 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
         info!("Starting core from: {}", core_path);
         
         let mut child = Command::new(&core_path)
+            .env("TAURI_ENV", "true")
+            .env("GRPC_HOST", "127.0.0.1")
+            .env("HOST", "127.0.0.1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
