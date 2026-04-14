@@ -1,22 +1,21 @@
 """
 XenoSys Memory System - L2 Long-term Memory (2ndBrain)
-Built on Obsidian for user materials and notes.
+Built on Obsidian for user materials and notes via REST API.
 
 Obsidian: https://obsidian.md
 The user's second brain - personal knowledge management.
+Note: Uses Obsidian Local REST API plugin for HTTP access.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -47,43 +46,57 @@ class NoteSearchResult:
     score: float
 
 
-@dataclass
-class Folder:
-    """A folder in the Obsidian vault."""
-    path: str
-    name: str
-    parent: Optional[str] = None
-
-
 # ============================================================================
-# Obsidian Integration
+# Obsidian REST API Client
 # ============================================================================
 
 class ObsidianClient:
     """
-    Client for Obsidian vault operations.
+    Client for Obsidian vault operations via REST API.
     
+    Requires Obsidian Local REST API plugin running on a server.
     Provides:
-    - Note CRUD operations
+    - Note CRUD operations via HTTP
     - Folder management
     - YAML frontmatter parsing
     - Wiki-link resolution
     - Tag-based organization
     """
     
-    def __init__(self, vault_path: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        self.vault_path = Path(vault_path or self.config.get("vault_path", "./2ndbrain"))
-        self._ensure_vault()
+        self.endpoint = self.config.get("endpoint", "http://localhost:8080")
+        self.api_key = self.config.get("api_key", "")
+        self.vault_name = self.config.get("vault_name", "xenosys")
+        self.timeout = httpx.Timeout(self.config.get("timeout", 30.0))
+        self._client: Optional[httpx.AsyncClient] = None
     
-    def _ensure_vault(self) -> None:
-        """Ensure vault directory exists."""
-        self.vault_path.mkdir(parents=True, exist_ok=True)
-        
-        # Create default folders
-        (self.vault_path / "inbox").mkdir(exist_ok=True)
-        (self.vault_path / "notes").mkdir(exist_ok=True)
-        (self.vault_path / "archives").mkdir(exist_ok=True)
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client."""
+        if self._client is None:
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.AsyncClient(
+                base_url=self.endpoint,
+                timeout=self.timeout,
+                headers=headers,
+            )
+        return self._client
+    
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+    
+    async def connect(self) -> bool:
+        """Verify connection to Obsidian API."""
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/vaults/{self.vault_name}/health")
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Failed to connect to Obsidian: {e}")
+            return False
     
     async def create_note(
         self,
@@ -93,13 +106,8 @@ class ObsidianClient:
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Note:
-        """Create a new note in the vault."""
-        # Generate filename from title
-        filename = self._sanitize_filename(title) + ".md"
-        
-        # Build path
-        note_path = self.vault_path / folder / filename
-        note_path.parent.mkdir(parents=True, exist_ok=True)
+        """Create a new note via HTTP."""
+        import yaml
         
         # Build frontmatter
         frontmatter = {
@@ -111,50 +119,62 @@ class ObsidianClient:
         if metadata:
             frontmatter.update(metadata)
         
-        # Write note
-        note_content = self._build_note_content(frontmatter, content)
-        note_path.write_text(note_content, encoding="utf-8")
+        fm_yaml = yaml.dump(frontmatter, default_flow_style=False)
+        full_content = f"---\n{fm_yaml}---\n\n{content}"
         
-        note = Note(
-            id=uuid4(),
-            title=title,
-            content=content,
-            path=str(note_path.relative_to(self.vault_path)),
-            tags=tags or [],
-            frontmatter=frontmatter,
-        )
+        # Generate filename
+        filename = self._sanitize_filename(title) + ".md"
+        file_path = f"{folder}/{filename}"
         
-        logger.info(f"Created note: {note.path}")
-        return note
+        try:
+            client = await self._get_client()
+            response = await client.put(
+                f"/vaults/{self.vault_name}/files/{file_path}",
+                json={"content": full_content}
+            )
+            
+            if response.status_code in (200, 201):
+                return Note(
+                    id=uuid4(),
+                    title=title,
+                    content=content,
+                    path=file_path,
+                    tags=tags or [],
+                    frontmatter=frontmatter,
+                )
+            raise Exception(f"Failed to create note: {response.status_code}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create note: {e}")
+            raise
     
     async def get_note(self, path: str) -> Optional[Note]:
-        """Read a note from the vault."""
-        note_path = self.vault_path / path
-        
-        if not note_path.exists():
+        """Read a note from the vault via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/vaults/{self.vault_name}/files/{path}")
+            
+            if response.status_code != 200:
+                return None
+            
+            content = response.json().get("content", "")
+            frontmatter, body = self._parse_frontmatter(content)
+            
+            title = frontmatter.get("title", path.split("/")[-1].replace(".md", ""))
+            tags = frontmatter.get("tags", [])
+            
+            return Note(
+                id=uuid4(),
+                title=title,
+                content=body,
+                path=path,
+                tags=tags,
+                frontmatter=frontmatter,
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to get note: {e}")
             return None
-        
-        content = note_path.read_text(encoding="utf-8")
-        frontmatter, body = self._parse_frontmatter(content)
-        
-        # Extract title from frontmatter or filename
-        title = frontmatter.get("title", note_path.stem)
-        tags = frontmatter.get("tags", [])
-        links = self._extract_links(body)
-        
-        stat = note_path.stat()
-        
-        return Note(
-            id=uuid4(),
-            title=title,
-            content=body,
-            path=path,
-            tags=tags,
-            links=links,
-            frontmatter=frontmatter,
-            created_at=datetime.fromisoformat(frontmatter.get("created", datetime.utcnow().isoformat())),
-            modified_at=datetime.fromisoformat(frontmatter.get("modified", datetime.utcnow().isoformat())),
-        )
     
     async def update_note(
         self,
@@ -168,7 +188,6 @@ class ObsidianClient:
         if not note:
             return None
         
-        # Update fields
         if content is not None:
             note.content = content
         if title is not None:
@@ -179,26 +198,23 @@ class ObsidianClient:
         note.modified_at = datetime.utcnow()
         note.frontmatter["modified"] = note.modified_at.isoformat()
         
-        # Write back
-        note_path = self.vault_path / path
-        note_content = self._build_note_content(note.frontmatter, note.content)
-        note_path.write_text(note_content, encoding="utf-8")
-        
-        return note
+        return await self.create_note(
+            title=note.title,
+            content=note.content,
+            folder=path.split("/")[0] if "/" in path else "notes",
+            tags=note.tags,
+            metadata=note.frontmatter,
+        )
     
     async def delete_note(self, path: str) -> bool:
-        """Delete a note (move to archives)."""
-        note_path = self.vault_path / path
-        
-        if not note_path.exists():
+        """Delete a note via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.delete(f"/vaults/{self.vault_name}/files/{path}")
+            return response.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Failed to delete note: {e}")
             return False
-        
-        # Move to archives instead of deleting
-        archive_path = self.vault_path / "archives" / note_path.name
-        note_path.rename(archive_path)
-        
-        logger.info(f"Archived note: {path} -> {archive_path}")
-        return True
     
     async def search_notes(
         self,
@@ -207,81 +223,77 @@ class ObsidianClient:
         folder: Optional[str] = None,
         limit: int = 50,
     ) -> List[NoteSearchResult]:
-        """Search notes by content and tags."""
-        results = []
-        
-        # Determine search folder
-        search_path = self.vault_path / (folder or "notes")
-        
-        # Walk through notes
-        for note_path in search_path.rglob("*.md"):
-            try:
-                note = await self.get_note(str(note_path.relative_to(self.vault_path)))
-                if not note:
-                    continue
-                
-                # Filter by tags if specified
-                if tags and not any(tag in note.tags for tag in tags):
-                    continue
-                
-                # Simple content search
-                if query.lower() in note.content.lower() or query.lower() in note.title.lower():
-                    score = self._calculate_score(query, note)
-                    results.append(NoteSearchResult(note=note, score=score))
-                
-            except Exception as e:
-                logger.warning(f"Error processing note {note_path}: {e}")
-        
-        # Sort by score
-        results.sort(key=lambda r: r.score, reverse=True)
-        return results[:limit]
+        """Search notes via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                f"/vaults/{self.vault_name}/search",
+                json={
+                    "query": query,
+                    "tags": tags,
+                    "folder": folder,
+                    "limit": limit
+                }
+            )
+            
+            if response.status_code != 200:
+                return []
+            
+            results = []
+            for item in response.json().get("results", []):
+                note = Note(
+                    id=uuid4(),
+                    title=item.get("title", ""),
+                    content=item.get("content", ""),
+                    path=item.get("path", ""),
+                    tags=item.get("tags", []),
+                )
+                results.append(NoteSearchResult(note=note, score=item.get("score", 0.0)))
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return []
     
     async def list_notes(
         self,
         folder: str = "notes",
-        recursive: bool = True,
     ) -> List[str]:
         """List note paths in a folder."""
-        folder_path = self.vault_path / folder
-        
-        if not folder_path.exists():
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/vaults/{self.vault_name}/files/{folder}")
+            
+            if response.status_code != 200:
+                return []
+            
+            return response.json().get("files", [])
+            
+        except Exception as e:
+            logger.error(f"Failed to list notes: {e}")
             return []
-        
-        pattern = "**/*.md" if recursive else "*.md"
-        return [str(p.relative_to(self.vault_path)) for p in folder_path.glob(pattern)]
     
     async def get_tags(self) -> List[str]:
         """Get all unique tags in the vault."""
-        tags = set()
-        
-        for note_path in self.vault_path.rglob("*.md"):
-            try:
-                note = await self.get_note(str(note_path.relative_to(self.vault_path)))
-                if note:
-                    tags.update(note.tags)
-            except Exception:
-                pass
-        
-        return sorted(list(tags))
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/vaults/{self.vault_name}/tags")
+            
+            if response.status_code == 200:
+                return response.json().get("tags", [])
+            return []
+            
+        except Exception as e:
+            logger.error(f"Failed to get tags: {e}")
+            return []
     
     def _sanitize_filename(self, title: str) -> str:
         """Convert title to safe filename."""
-        # Remove special characters
+        import re
         filename = re.sub(r'[<>:"/\\|?*]', '', title)
-        # Replace spaces with underscores
         filename = filename.replace(' ', '_')
-        return filename[:200]  # Limit length
-    
-    def _build_note_content(
-        self,
-        frontmatter: Dict[str, Any],
-        body: str,
-    ) -> str:
-        """Build note content with YAML frontmatter."""
-        import yaml
-        
-        fm_yaml = yaml.dump(frontmatter, default_flow_style=False)
-        return f"---\n{fm_yaml}---\n\n{body}"
+        return filename[:200]
     
     def _parse_frontmatter(self, content: str) -> tuple[Dict[str, Any], str]:
         """Parse YAML frontmatter from note."""
@@ -300,36 +312,6 @@ class ObsidianClient:
             logger.warning(f"Failed to parse frontmatter: {e}")
         
         return {}, content
-    
-    def _extract_links(self, content: str) -> List[str]:
-        """Extract wiki-style links from content."""
-        # Match [[link]] pattern
-        links = re.findall(r'\[\[([^\]]+)\]\]', content)
-        return links
-    
-    def _calculate_score(self, query: str, note: Note) -> float:
-        """Calculate relevance score for search."""
-        score = 0.0
-        query_lower = query.lower()
-        
-        # Title match is worth more
-        if query_lower in note.title.lower():
-            score += 10.0
-        
-        # Tag match
-        for tag in note.tags:
-            if query_lower in tag.lower():
-                score += 5.0
-        
-        # Content match
-        if query_lower in note.content.lower():
-            score += 1.0
-        
-        # Recency bonus
-        hours_old = (datetime.utcnow() - note.modified_at).total_seconds() / 3600
-        score += max(0, 1 - hours_old / 24)  # Decay over 24 hours
-        
-        return score
 
 
 # ============================================================================
@@ -338,29 +320,28 @@ class ObsidianClient:
 
 class SecondBrainStore:
     """
-    L2 Long-term Memory store using Obsidian.
+    L2 Long-term Memory store using Obsidian via HTTP.
     
     Provides:
-    - Personal knowledge management
+    - Personal knowledge management via REST API
     - Note-taking with wiki-links
     - Tag-based organization
-    - Versioning through git (external)
     - Full-text search
     """
     
     def __init__(
         self,
         obsidian_client: Optional[ObsidianClient] = None,
-        default_folder: str = "notes",
     ):
         self.obsidian = obsidian_client or ObsidianClient()
-        self.default_folder = default_folder
-        self._cache: Dict[str, Note] = {}
-        self._lock = asyncio.Lock()
     
-    async def initialize(self) -> None:
+    async def initialize(self) -> bool:
         """Initialize the 2ndBrain store."""
-        logger.info("Initialized 2ndBrain (Obsidian) store")
+        return await self.obsidian.connect()
+    
+    async def close(self) -> None:
+        """Close the store."""
+        await self.obsidian.close()
     
     async def store(
         self,
@@ -371,16 +352,13 @@ class SecondBrainStore:
         user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> UUID:
-        """Store a note in 2ndBrain."""
-        # Generate title if not provided
+        """Store a note in 2ndBrain via HTTP."""
         title = title or self._generate_title(content)
         
-        # Add user tag if provided
         if user_id:
             tags = tags or []
             tags.append(f"user:{user_id}")
         
-        # Build metadata
         note_metadata = metadata or {}
         if user_id:
             note_metadata["user_id"] = user_id
@@ -388,28 +366,16 @@ class SecondBrainStore:
         note = await self.obsidian.create_note(
             title=title,
             content=content,
-            folder=folder or self.default_folder,
+            folder=folder or "notes",
             tags=tags,
             metadata=note_metadata,
         )
-        
-        # Update cache
-        async with self._lock:
-            self._cache[note.path] = note
         
         logger.info(f"Stored note in 2ndBrain: {note.id}")
         return note.id
     
     async def retrieve(self, path: str) -> Optional[Note]:
         """Retrieve a note by path."""
-        # Check cache
-        async with self._lock:
-            note = self._cache.get(path)
-        
-        if note:
-            return note
-        
-        # Fetch from Obsidian
         return await self.obsidian.get_note(path)
     
     async def search(
@@ -420,19 +386,15 @@ class SecondBrainStore:
         limit: int = 10,
     ) -> List[NoteSearchResult]:
         """Search notes in 2ndBrain."""
-        # Add user filter if provided
         if user_id:
             tags = tags or []
             tags.append(f"user:{user_id}")
         
-        results = await self.obsidian.search_notes(
+        return await self.obsidian.search_notes(
             query=query,
             tags=tags,
             limit=limit,
         )
-        
-        logger.info(f"2ndBrain search returned {len(results)} results")
-        return results
     
     async def get_user_notes(
         self,
@@ -455,62 +417,10 @@ class SecondBrainStore:
         tags: Optional[List[str]] = None,
     ) -> Optional[Note]:
         """Update a note."""
-        note = await self.obsidian.update_note(path, content, title, tags)
-        
-        if note:
-            async with self._lock:
-                self._cache[path] = note
-        
-        return note
-    
-    async def link_notes(
-        self,
-        source_path: str,
-        target_title: str,
-    ) -> bool:
-        """Add a wiki-link from one note to another."""
-        source = await self.retrieve(source_path)
-        if not source:
-            return False
-        
-        # Add link to content
-        link = f"[[{target_title}]]"
-        new_content = source.content + f"\n{link}"
-        
-        await self.update(source_path, content=new_content)
-        return True
-    
-    async def get_related_notes(
-        self,
-        note_path: str,
-        limit: int = 10,
-    ) -> List[Note]:
-        """Get notes related through links and tags."""
-        note = await self.retrieve(note_path)
-        if not note:
-            return []
-        
-        related = []
-        
-        # Get linked notes
-        for link_title in note.links:
-            # Search for the linked note
-            results = await self.search(link_title, limit=1)
-            if results:
-                related.append(results[0].note)
-        
-        # Get notes with same tags
-        for tag in note.tags:
-            results = await self.search("", tags=[tag], limit=limit)
-            for r in results:
-                if r.note.path != note_path and r.note not in related:
-                    related.append(r.note)
-        
-        return related[:limit]
+        return await self.obsidian.update_note(path, content, title, tags)
     
     def _generate_title(self, content: str) -> str:
         """Generate a title from content."""
-        # Use first line or first 50 chars
         first_line = content.split('\n')[0].strip()
         if first_line:
             return first_line[:100]
@@ -518,13 +428,9 @@ class SecondBrainStore:
     
     async def get_stats(self) -> Dict[str, Any]:
         """Get 2ndBrain statistics."""
-        notes = await self.obsidian.list_notes()
-        tags = await self.obsidian.get_tags()
-        
         return {
-            "total_notes": len(notes),
-            "total_tags": len(tags),
-            "vault_path": str(self.obsidian.vault_path),
+            "endpoint": self.obsidian.endpoint,
+            "vault": self.obsidian.vault_name,
         }
 
 
@@ -533,16 +439,12 @@ _global_secondbrain_store: Optional[SecondBrainStore] = None
 
 
 def get_secondbrain_store(
-    vault_path: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> SecondBrainStore:
     """Get or create global 2ndBrain store."""
     global _global_secondbrain_store
     if _global_secondbrain_store is None:
-        obsidian_config = config or {}
-        if vault_path:
-            obsidian_config["vault_path"] = vault_path
         _global_secondbrain_store = SecondBrainStore(
-            obsidian_client=ObsidianClient(config=obsidian_config)
+            obsidian_client=ObsidianClient(config) if config else None
         )
     return _global_secondbrain_store

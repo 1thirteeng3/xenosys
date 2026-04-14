@@ -215,6 +215,7 @@ class Agent(ABC):
         
         # State
         self.state = AgentState.IDLE
+        self.is_active = True  # Required for repository
         self.messages: list[AgentMessage] = []
         self.current_tool_call: Optional[ToolCall] = None
         
