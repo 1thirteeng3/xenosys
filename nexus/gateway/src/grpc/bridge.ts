@@ -509,14 +509,21 @@ export class GRPCBridge {
   // ========================================================================
 
   private resolveProtoPath(): string {
+    // Priority order: 
+    // 1. Production: dist/grpc/../proto (relative to compiled bridge.js)
+    // 2. Development: src/grpc/../proto (relative to source)
+    // 3. Project root: proto/nexus.proto
     const possiblePaths = [
-      resolve(__dirname, '../../proto/nexus.proto'),
-      resolve(__dirname, '../../../proto/nexus.proto'),
-      resolve(process.cwd(), 'proto/nexus.proto'),
+      resolve(__dirname, '../proto/nexus.proto'),  // Production: dist/proto/
+      resolve(__dirname, '../../proto/nexus.proto'), // Dev: src/proto from grpc/
+      resolve(__dirname, '../../../proto/nexus.proto'), // Alt dev path
+      resolve(process.cwd(), 'proto/nexus.proto'), // Project root
+      resolve(process.cwd(), 'src/proto/nexus.proto'), // Src root
     ];
 
     for (const p of possiblePaths) {
       if (existsSync(p)) {
+        console.log(`Using proto file: ${p}`);
         return p;
       }
     }
