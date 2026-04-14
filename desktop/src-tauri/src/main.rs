@@ -53,6 +53,8 @@ mod base64_helper {
 struct SidecarState {
     gateway_running: bool,
     core_running: bool,
+    gateway_pid: Option<u32>,  // Store exact PID for safe termination
+    core_pid: Option<u32>,      // Store exact PID for safe termination
 }
 
 struct TunnelState {
@@ -79,6 +81,8 @@ fn main() {
             sidecars: Mutex::new(SidecarState {
                 gateway_running: false,
                 core_running: false,
+                gateway_pid: None,
+                core_pid: None,
             }),
             tunnel: Mutex::new(TunnelState {
                 running: false,
@@ -138,6 +142,10 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
             .spawn()
             .map_err(|e| format!("Failed to start gateway: {}", e))?;
         
+        // Store exact PID for safe termination
+        sidecar_state.gateway_pid = child.id();
+        info!("Gateway started with PID: {:?}", sidecar_state.gateway_pid);
+        
         // Log output in background
         if let Some(stdout) = child.stdout.take() {
             let mut reader = BufReader::new(stdout).lines();
@@ -192,6 +200,10 @@ async fn start_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Str
             });
         }
         
+        // Store exact PID for safe termination
+        sidecar_state.core_pid = child.id();
+        info!("Core started with PID: {:?}", sidecar_state.core_pid);
+        
         sidecar_state.core_running = true;
     }
     
@@ -216,21 +228,31 @@ async fn stop_sidecars(state: tauri::State<'_, AppState>) -> Result<String, Stri
     
     let mut sidecar_state = state.sidecars.lock().map_err(|e| e.to_string())?;
     
-    // On Windows, we need to use taskkill
+    // Kill by exact PID - prevents killing other processes with similar names
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill").args(&["/F", "/IM", "gateway.exe"]).output();
-        let _ = Command::new("taskkill").args(&["/F", "/IM", "core.exe"]).output();
+        if let Some(pid) = sidecar_state.gateway_pid {
+            let _ = Command::new("taskkill").args(&["/F", "/PID", &pid.to_string()]).output();
+        }
+        if let Some(pid) = sidecar_state.core_pid {
+            let _ = Command::new("taskkill").args(&["/F", "/PID", &pid.to_string()]).output();
+        }
     }
     
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("pkill").args(&["-f", "xenosys-gateway"]).output();
-        let _ = Command::new("pkill").args(&["-f", "xenosys-core"]).output();
+        if let Some(pid) = sidecar_state.gateway_pid {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        }
+        if let Some(pid) = sidecar_state.core_pid {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        }
     }
     
     sidecar_state.gateway_running = false;
     sidecar_state.core_running = false;
+    sidecar_state.gateway_pid = None;
+    sidecar_state.core_pid = None;
     
     Ok("Sidecars stopped".to_string())
 }

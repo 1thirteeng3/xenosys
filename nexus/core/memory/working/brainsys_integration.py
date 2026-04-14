@@ -9,6 +9,7 @@ Note: Uses MCP (Model Context Protocol) with SSE for remote HTTP transport.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -95,14 +96,27 @@ class BrainSysMCPClient:
             logger.error(f"Failed to list tools: {e}")
             return []
     
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """Call an MCP tool."""
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any], timeout: float = 30.0) -> Any:
+        """Call an MCP tool with timeout protection.
+        
+        Args:
+            tool_name: Name of the MCP tool to call
+            arguments: Tool arguments
+            timeout: Maximum time to wait for response (default 30s)
+        """
         if not self.session:
             raise RuntimeError("Not connected to MCP server")
         
         try:
-            result = await self.session.call_tool(tool_name, arguments)
+            # Wrap with asyncio.wait_for to prevent infinite wait on network drop
+            result = await asyncio.wait_for(
+                self.session.call_tool(tool_name, arguments),
+                timeout=timeout
+            )
             return result
+        except asyncio.TimeoutError:
+            logger.error(f"MCP tool {tool_name} timed out after {timeout}s")
+            raise RuntimeError(f"MCP tool call timed out: {tool_name}")
         except Exception as e:
             logger.error(f"Failed to call tool {tool_name}: {e}")
             raise
