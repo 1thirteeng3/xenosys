@@ -25,6 +25,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - HOST=0.0.0.0
       - GRPC_PORT=50051
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -55,6 +56,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
+      - GRPC_HOST=0.0.0.0
+      - GRPC_PORT=50051
+      - HOST=0.0.0.0
       # Memory integrations
       - CORTEX_ENDPOINT=http://cortex:8000
       - OPENVIKING_ENDPOINT=http://openviking:8080
