@@ -5,10 +5,12 @@
  * - Tracks pending HITL count
  * - Handles offline graceful degradation
  * - MOBILE RESILIENCE: Reconnection on foreground return
+ * - FIX: Persistent storage using AsyncStorage
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Types
 interface TunnelConfig {
@@ -90,14 +92,14 @@ export const useTunnelHealth = () => {
     }
   }, [config, validateConnection]);
 
-  // Initialize on mount
+  // Initialize on mount - FIX: Load from persistent storage
   useEffect(() => {
     const init = async () => {
       try {
-        // Load saved config from storage
-        // Note: In production, use @react-native-async-storage/async-storage
-        const saved = null; // await fetch(TUNNEL_CONFIG_KEY);
-        if (saved) {
+        // FIX: Actually load config from AsyncStorage
+        const savedRaw = await AsyncStorage.getItem(TUNNEL_CONFIG_KEY);
+        if (savedRaw) {
+          const saved = JSON.parse(savedRaw) as TunnelConfig;
           setConfig(saved);
           await validateConnection(saved.tunnelUrl);
         }
@@ -174,7 +176,7 @@ export const useTunnelHealth = () => {
     return () => clearInterval(interval);
   }, [config, isConnected]);
 
-  // Pair with desktop
+  // Pair with desktop - FIX: Save to persistent storage
   const pair = useCallback(async (tunnelUrl: string, token: string) => {
     setIsLoading(true);
     setError(null);
@@ -193,6 +195,8 @@ export const useTunnelHealth = () => {
         pairedAt: Date.now(),
       };
       
+      // FIX: Save to AsyncStorage for persistence
+      await AsyncStorage.setItem(TUNNEL_CONFIG_KEY, JSON.stringify(newConfig));
       setConfig(newConfig);
       setIsConnected(true);
       return true;
@@ -204,8 +208,9 @@ export const useTunnelHealth = () => {
     }
   }, [validateConnection]);
 
-  // Unpair
+  // Unpair - FIX: Clear from storage
   const unpair = useCallback(async () => {
+    await AsyncStorage.removeItem(TUNNEL_CONFIG_KEY);
     setConfig(null);
     setIsConnected(false);
     setPendingCount(0);
