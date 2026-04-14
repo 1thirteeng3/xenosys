@@ -3,45 +3,56 @@
  * Main entry point with BootSplash barrier for sidecar synchronization
  */
 
-import React, { useState } from 'react';
-import { BootSplash } from './components/BootSplash';
+import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MainLayout } from './components/layout/MainLayout';
+import { ArenaZone } from './components/zones/ArenaZone';
+import { GovernanceZone } from './components/zones/GovernanceZone';
 import { NetworkSettings } from './components/NetworkSettings';
+import { useUIStore } from './store/uiStore';
+import './styles.css';
 
-const App: React.FC = () => {
-  const [isReady, setIsReady] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+// React Query client
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60,
+      retry: 1,
+    },
+  },
+});
 
-  if (!isReady) {
-    return <BootSplash onReady={() => setIsReady(true)} />;
-  }
-
-  return (
-    <div className="flex flex-col items-center justify-center h-screen bg-[#0A0A0A] text-[#00FF9D] font-mono">
-      <h1 className="text-4xl font-bold mb-4">XenoSys</h1>
-      <p className="text-lg">Cognitive Engine Online</p>
-      
-      {/* Settings toggle */}
-      <button
-        onClick={() => setShowSettings(!showSettings)}
-        className="mt-4 px-4 py-2 border border-[#00FF9D] rounded hover:bg-[#00FF9D] hover:text-[#0A0A0A]"
-      >
-        {showSettings ? 'Fechar Configurações' : 'Configurações de Rede'}
-      </button>
-      
-      {/* Network Settings Panel */}
-      {showSettings && (
-        <div className="mt-4 w-full max-w-md">
+// Zone router
+const ZoneRouter: React.FC = () => {
+  const { activeZone } = useUIStore();
+  
+  switch (activeZone) {
+    case 'arena':
+      return <ArenaZone />;
+    case 'governance':
+      return <GovernanceZone />;
+    case 'network':
+      return (
+        <div className="p-6">
           <NetworkSettings />
         </div>
-      )}
-      
-      {/* Dashboard placeholder */}
-      {!showSettings && (
-        <div className="mt-8 p-4 border border-[#00FF9D] rounded">
-          <p>Dashboard - Coming Soon</p>
+      );
+    default:
+      return (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>{activeZone} - Coming Soon</p>
         </div>
-      )}
-    </div>
+      );
+  }
+};
+
+const App: React.FC = () => {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MainLayout>
+        <ZoneRouter />
+      </MainLayout>
+    </QueryClientProvider>
   );
 };
 
