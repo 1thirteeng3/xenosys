@@ -8,6 +8,9 @@ import os
 import signal
 from typing import Optional
 
+import grpc
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
 from .agents.registry import agent_registry
 from .memory.orchestrator import get_memory_orchestrator
 from .orchestration.event_bus import event_bus
@@ -78,6 +81,18 @@ class XenoSysApp:
         self.config = config or {}
         self._running = False
         self._tasks: list[asyncio.Task] = []
+        self._grpc_server: Optional[grpc.aio.Server] = None
+    
+    @retry(
+        stop=stop_after_attempt(7),
+        wait=wait_exponential(multiplier=2, min=3, max=30),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=lambda rs: logger.warning(f"Waiting for memory subsystems... Attempt {rs.attempt_number}/7")
+    )
+    async def _initialize_memory_with_retry(self):
+        """Initialize the memory orchestrator with Exponential Backoff."""
+        memory = get_memory_orchestrator()
+        await memory.initialize()
     
     async def start(self) -> None:
         """Start the application."""
@@ -91,12 +106,27 @@ class XenoSysApp:
         broker_backend = broker_config.get("backend", "memory")
         await initialize_broker(broker_backend, **broker_config)
         
-        # Initialize memory orchestrator
-        memory = get_memory_orchestrator()
-        await memory.initialize()
+        # Initialize memory orchestrator with retry
+        try:
+            await self._initialize_memory_with_retry()
+        except Exception as e:
+            logger.error(f"Critical failure: Could not connect to memory modules after 7 attempts. {e}")
+            raise
         
         # Initialize telemetry
         telemetry = get_telemetry_exporter(self.config.get("telemetry"))
+        
+        # Start the gRPC Asynchronous Server
+        self._grpc_server = grpc.aio.server()
+        
+        # Associate your gRPC Servicer here:
+        # from .api.grpc_servicer import RuntimeService, add_RuntimeServicer_to_server
+        # add_RuntimeServicer_to_server(RuntimeService(), self._grpc_server)
+        
+        bind_address = get_grpc_bind_address()
+        self._grpc_server.add_insecure_port(bind_address)
+        await self._grpc_server.start()
+        logger.info(f"gRPC Server actively listening on {bind_address}")
         
         self._running = True
         logger.info("XenoSys started successfully")
@@ -107,14 +137,16 @@ class XenoSysApp:
         
         self._running = False
         
-        # 1. Stop new requests - Close HTTP clients and gRPC connections
-        logger.info("Closing HTTP clients and gRPC connections...")
+        # 1. Stop gRPC server
+        if self._grpc_server:
+            logger.info("Shutting down gRPC server...")
+            await self._grpc_server.stop(grace=5.0)
         
-        # 2. Disconnect Event Bus, clearing Redis connections
+        # 2. Disconnect Event Bus
         logger.info("Disconnecting Event Bus (Redis connections)...")
         await event_bus.stop()
         
-        # 3. Stop message broker (includes Redis cleanup if using Redis backend)
+        # 3. Stop message broker
         logger.info("Stopping message broker...")
         await shutdown_broker()
         
@@ -124,7 +156,6 @@ class XenoSysApp:
             if not task.done():
                 task.cancel()
         
-        # Wait for tasks to complete cancellation
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         
