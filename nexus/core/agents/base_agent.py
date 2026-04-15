@@ -1,6 +1,6 @@
 """
 XenoSys Core - Agent System
-Multi-agent orchestration with metacognitive capabilities
+Multi-agent orchestration with metacognitive capabilities and L4 Knowledge Graph interception
 """
 
 from __future__ import annotations
@@ -11,8 +11,26 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
+
+import dspy
+
+# Importação condicional para evitar dependência circular (Type Hinting)
+if TYPE_CHECKING:
+    # Ajuste este path conforme o local exato da sua classe ContextualMemoryClient
+    from nexus.core.memory.l4_contextual.graph_integration import ContextualMemoryClient
+
+try:
+    from .signatures import ExtractKnowledgeGraph
+except ImportError:
+    # Fallback seguro caso o arquivo signatures.py ainda não tenha sido criado
+    class ExtractKnowledgeGraph(dspy.Signature):
+        """Extrai entidades e relações de uma conversa para salvar em Knowledge Graph."""
+        user_input = dspy.InputField()
+        agent_response = dspy.InputField()
+        entities = dspy.OutputField()
+        relations = dspy.OutputField()
 
 logger = logging.getLogger(__name__)
 
@@ -117,17 +135,17 @@ class AgentResponse:
 
 class Tool(ABC):
     """Base class for agent tools."""
-    
+
     name: str = ""
     description: str = ""
     parameters: dict[str, Any] = {}
     requires_approval: bool = False  # HITL requirement
-    
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str:
         """Execute the tool and return result."""
         pass
-    
+
     def validate(self, **kwargs: Any) -> bool:
         """Validate tool parameters."""
         return True
@@ -135,11 +153,11 @@ class Tool(ABC):
 
 class ToolRegistry:
     """Registry for available tools."""
-    
+
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._toolsets: dict[str, set[str]] = {}  # toolset -> tool names
-    
+
     def register(self, tool: Tool, toolsets: Optional[list[str]] = None) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
@@ -149,7 +167,7 @@ class ToolRegistry:
                     self._toolsets[ts] = set()
                 self._toolsets[ts].add(tool.name)
         logger.info(f"Registered tool: {tool.name}")
-    
+
     def unregister(self, name: str) -> bool:
         """Unregister a tool."""
         if name in self._tools:
@@ -158,17 +176,17 @@ class ToolRegistry:
                 self._toolsets[ts].discard(name)
             return True
         return False
-    
+
     def get(self, name: str) -> Optional[Tool]:
         """Get a tool by name."""
         return self._tools.get(name)
-    
+
     def list_tools(self, toolset: Optional[str] = None) -> list[str]:
         """List available tool names."""
         if toolset:
             return list(self._toolsets.get(toolset, set()))
         return list(self._tools.keys())
-    
+
     def get_tools_for_agent(self, agent_id: str) -> list[Tool]:
         """Get tools available for an agent (placeholder for ACL)."""
         return list(self._tools.values())
@@ -185,14 +203,15 @@ tool_registry = ToolRegistry()
 class Agent(ABC):
     """
     Base class for XenoSys agents.
-    
+
     Provides:
+    - L4 Knowledge Graph interception (Metacognitive Memory)
     - Message history management
     - Tool execution with HITL support
     - State machine transitions
     - Logging and tracing
     """
-    
+
     def __init__(
         self,
         agent_id: str,
@@ -203,6 +222,7 @@ class Agent(ABC):
         system_prompt: Optional[str] = None,
         tools: Optional[list[str]] = None,
         llm_config: Optional[dict[str, Any]] = None,
+        l4_client: Optional['ContextualMemoryClient'] = None,
     ) -> None:
         self.agent_id = agent_id
         self.role = role
@@ -213,53 +233,50 @@ class Agent(ABC):
         self.tools = tools or []
         self.llm_config = llm_config or {}
         
+        # Cliente do Knowledge Graph
+        self.l4 = l4_client
+
         # Initialize DSPy LM (must be configured at startup)
         self._init_dspy_lm()
-        
+
         # State
         self.state = AgentState.IDLE
         self.is_active = True  # Required for repository
         self.messages: list[AgentMessage] = []
         self.current_tool_call: Optional[ToolCall] = None
-        
+
         # Metacognitive state
         self.iteration_count = 0
         self.thought_history: list[str] = []
-    
+
     def _init_dspy_lm(self) -> None:
         """
         Initialize DSPy LM with provider injection.
-        
-        The model and API Key MUST be injected via llm_config:
-        - provider: "openai", "anthropic", "ollama", "azure"
-        - model: e.g., "gpt-4o", "claude-3-opus", "llama2"
-        - api_key: (optional) for non-env based auth
-        - api_base: (optional) for custom endpoints like Ollama
+        Also configures the L4 Knowledge Extractor if L4 client is available.
         """
         import os
-        import dspy
-        
+
         config = self.llm_config or {}
         provider = config.get("provider", "openai")
         model_name = config.get("model", "gpt-4o")
-        
+
         try:
             if provider == "openai":
                 api_key = config.get("api_key") or os.environ.get("OPENAI_API_KEY")
                 if not api_key:
                     logger.warning(f"Agent {self.name}: OPENAI_API_KEY not set, using fallback")
                 self.lm = dspy.LM(f"openai/{model_name}", api_key=api_key)
-                
+
             elif provider == "anthropic":
                 api_key = config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
                 if not api_key:
                     logger.warning(f"Agent {self.name}: ANTHROPIC_API_KEY not set, using fallback")
                 self.lm = dspy.LM(f"anthropic/{model_name}", api_key=api_key)
-                
+
             elif provider == "ollama":
                 api_base = config.get("api_base", "http://localhost:11434")
                 self.lm = dspy.LM(f"ollama/{model_name}", api_base=api_base)
-                
+
             elif provider == "azure":
                 api_key = config.get("api_key") or os.environ.get("AZURE_API_KEY")
                 api_base = config.get("api_base") or os.environ.get("AZURE_API_BASE")
@@ -272,138 +289,152 @@ class Agent(ABC):
                 )
             else:
                 raise ValueError(f"LLM provider not supported: {provider}")
-            
+
             # Configure DSPy global context
             dspy.configure(lm=self.lm)
             logger.info(f"DSPy LM configured: {provider}/{model_name} for agent {self.name}")
-            
+
+            # Instancia o extrator L4 (Se a memória contextual estiver ativada)
+            if self.l4 is not None:
+                self.knowledge_extractor = dspy.Predict(ExtractKnowledgeGraph)
+
         except ImportError:
             logger.warning(f"Agent {self.name}: DSPy not installed, using litellm fallback")
             self.lm = None
+            self.knowledge_extractor = None
         except Exception as e:
             logger.error(f"Agent {self.name}: Failed to configure DSPy: {e}")
             self.lm = None
-    
+            self.knowledge_extractor = None
+
     @property
     def is_critic(self) -> bool:
         """Check if this is a critic/auditor agent."""
         return self.agent_type == AgentType.CRITIC or self.role == AgentRole.REFLECTOR
-    
+
     async def think(self, request: AgentRequest) -> AgentMessage:
         """
         Think phase - generate next action.
-        
         Override this method to implement custom reasoning.
         """
-        # Build context
         context = self._build_context(request)
-        
-        # Call LLM (placeholder - actual implementation uses DSPy)
         response = await self._call_llm(context)
-        
-        # Parse response
+
         message = AgentMessage(
             role=MessageRole.ASSISTANT,
             content=response["content"],
             tool_calls=self._parse_tool_calls(response.get("tool_calls", [])),
         )
-        
         return message
-    
+
     async def act(self, message: AgentMessage) -> AgentMessage:
         """
         Act phase - execute planned action.
-        
-        Can involve tool execution or direct response.
         """
         if message.tool_calls:
-            # Execute tools
             for tool_call in message.tool_calls:
                 await self._execute_tool(tool_call)
                 message.tool_results.append(tool_call)
-        else:
-            # Direct response - no action needed
-            pass
-        
         return message
-    
+
     async def observe(self, result: AgentMessage) -> None:
         """
         Observe phase - process results and update state.
-        
-        Used for metacognitive reflection.
         """
         self.messages.append(result)
         self.thought_history.append(result.content[:200])  # Truncate for history
-    
+
     async def run(self, request: AgentRequest) -> AgentResponse:
         """
-        Main agent execution loop (ReAct pattern).
-        
-        Think -> Act -> Observe -> repeat
+        Main agent execution loop (ReAct pattern) com Interceptação L4.
         """
         self.state = AgentState.THINKING
         self.iteration_count = 0
-        
+
         try:
-            # System message
-            if request.system_prompt:
+            # ==========================================
+            # 1. PRE-HOOK (LEITURA DO "CADERNINHO" L4)
+            # ==========================================
+            l4_context = ""
+            if self.l4:
+                l4_context = await self.l4.read_graph(query=request.message)
+
+            # System message enriquecido com o Knowledge Graph
+            enriched_system_prompt = request.system_prompt or self.system_prompt
+            if l4_context:
+                enriched_system_prompt += f"\n\n[CONTEXTO DE MEMÓRIA DINÂMICA (L4)]\n{l4_context}"
+
+            if enriched_system_prompt:
                 self.messages.append(AgentMessage(
                     role=MessageRole.SYSTEM,
-                    content=request.system_prompt,
+                    content=enriched_system_prompt,
                 ))
-            
+
             # User message
             self.messages.append(AgentMessage(
                 role=MessageRole.USER,
                 content=request.message,
             ))
-            
+
             # Main loop
             while self.iteration_count < request.max_iterations:
                 self.iteration_count += 1
-                
+
                 # THINK
                 self.state = AgentState.THINKING
                 thought = await self.think(request)
                 self.messages.append(thought)
-                
-                # Check for completion
+
+                # ==========================================
+                # 2. INFERÊNCIA PRINCIPAL (CHECAGEM DE SAÍDA)
+                # ==========================================
                 if not thought.tool_calls:
-                    # Direct response
+                    # Resposta direta (sem ferramentas)
                     self.state = AgentState.COMPLETED
+                    final_content = thought.content
+                    
+                    # 3. POST-HOOK ASSÍNCRONO
+                    if self.l4 and hasattr(self, 'knowledge_extractor') and self.knowledge_extractor:
+                        asyncio.create_task(self._reflect_and_store(request.message, final_content))
+
                     return AgentResponse(
                         session_id=request.session_id,
                         message_id=str(uuid4()),
-                        content=thought.content,
+                        content=final_content,
                         done=True,
                         iterations=self.iteration_count,
                         tool_calls=thought.tool_calls,
                     )
-                
+
                 # ACT
                 self.state = AgentState.ACTING
                 for tool_call in thought.tool_calls:
                     if tool_call.name == "final_answer":
                         self.state = AgentState.COMPLETED
+                        final_content = tool_call.arguments.get("answer", "")
+                        
+                        # 3. POST-HOOK ASSÍNCRONO
+                        if self.l4 and hasattr(self, 'knowledge_extractor') and self.knowledge_extractor:
+                            asyncio.create_task(self._reflect_and_store(request.message, final_content))
+
                         return AgentResponse(
                             session_id=request.session_id,
                             message_id=str(uuid4()),
-                            content=tool_call.arguments.get("answer", ""),
+                            content=final_content,
                             done=True,
                             iterations=self.iteration_count,
                         )
-                    
+
                     await self._execute_tool(tool_call)
                     thought.tool_results.append(tool_call)
-                    
+
                     if tool_call.error:
                         logger.warning(f"Tool {tool_call.name} failed: {tool_call.error}")
-                
+
                 # OBSERVE
                 self.state = AgentState.WAITING_TOOL
                 await self.observe(thought)
-            
+
             # Max iterations reached
             self.state = AgentState.COMPLETED
             return AgentResponse(
@@ -413,7 +444,7 @@ class Agent(ABC):
                 done=True,
                 iterations=self.iteration_count,
             )
-            
+
         except Exception as e:
             self.state = AgentState.FAILED
             logger.error(f"Agent {self.agent_id} failed: {e}", exc_info=True)
@@ -427,74 +458,83 @@ class Agent(ABC):
             )
         finally:
             self._reset()
-    
+
+    # ==========================================
+    # FUNÇÃO DO POST-HOOK (METÁCOGNIÇÃO L4)
+    # ==========================================
+    async def _reflect_and_store(self, user_input: str, agent_response: str) -> None:
+        """Tarefa de background: Avalia a conversa e atualiza o Knowledge Graph."""
+        try:
+            # Pede ao DSPy para abstrair/aprender regras novas da conversa
+            extraction = self.knowledge_extractor(user_input=user_input, agent_response=agent_response)
+            
+            # Valida as chaves do output do DSPy
+            entities = getattr(extraction, 'entities', None)
+            relations = getattr(extraction, 'relations', None)
+            
+            if entities and relations:
+                await self.l4.create_relations(
+                    entities=entities, 
+                    relations=relations
+                )
+                logger.info(f"🧠 [L4 Updated] Novas memórias cognitivas consolidadas no grafo.")
+        except Exception as e:
+            logger.warning(f"⚠️ [L4 Reflection Error] Falha ao extrair memória: {e}")
+
     async def _execute_tool(self, tool_call: ToolCall) -> None:
         """Execute a tool call."""
         tool_call.started_at = datetime.utcnow()
-        
+
         tool = tool_registry.get(tool_call.name)
         if not tool:
             tool_call.error = f"Unknown tool: {tool_call.name}"
             return
-        
+
         try:
             # Check if approval needed
             if tool.requires_approval:
                 self.state = AgentState.WAITING_HITL
-                # Signal HITL (implementation depends on integration)
                 approved = await self._request_approval(tool_call)
                 if not approved:
                     tool_call.approved = False
                     tool_call.error = "Tool execution rejected by human"
                     return
                 tool_call.approved = True
-            
+
             # Execute
             self.state = AgentState.ACTING
             result = await tool.execute(**tool_call.arguments)
             tool_call.result = result
-            
+
         except Exception as e:
             tool_call.error = str(e)
-            
+
         finally:
             tool_call.completed_at = datetime.utcnow()
-    
+
     async def _request_approval(self, tool_call: ToolCall) -> bool:
         """Request human approval for tool execution."""
-        # This would integrate with HITL system
-        # For now, auto-approve
         return True
-    
+
     async def _call_llm(self, context: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Call LLM with context.
-        
-        Priority: 1. DSPy (if configured in __init__)
-                  2. litellm (fallback)
-        """
-        # Try DSPy first if configured
+        """Call LLM with context."""
         if hasattr(self, 'lm') and self.lm is not None:
             return await self._call_dspy(context)
-        
-        # Fallback to litellm
         return await self._call_litellm(context)
-    
+
     async def _call_dspy(self, context: list[dict[str, Any]]) -> dict[str, Any]:
         """Call LLM using DSPy."""
         import dspy
-        
+
         try:
-            # Extract messages for DSPy
             messages = []
             for msg in context[-20:]:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 messages.append(dspy.UserMessage(content) if role == "user" else dspy.AssistantMessage(content))
-            
-            # Use DSPy LM directly
+
             response = self.lm(messages)
-            
+
             if response:
                 content = response[0].content if hasattr(response[0], 'content') else str(response[0])
                 return {
@@ -504,39 +544,28 @@ class Agent(ABC):
                     "tokens_in": 0,
                     "tokens_out": 0,
                 }
-            
+
             return {"content": "DSPy returned empty response", "tool_calls": []}
-            
+
         except Exception as e:
             logger.error(f"DSPy call failed: {e}")
-            # Fall back to litellm
             return await self._call_litellm(context)
-    
+
     async def _call_litellm(self, context: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Call LLM with context using litellm (fallback).
-        
-        Supports multiple providers: OpenAI, Anthropic, Azure, local models, etc.
-        """
+        """Call LLM with context using litellm (fallback)."""
         try:
             import litellm
-            
-            # Get LLM config from agent or use defaults
+
             model = self.llm_config.get("model", "gpt-4o")
             provider = self.llm_config.get("provider", "openai")
-            
-            # Build litellm request
-            # Construct full model string if using custom provider
             model_str = f"{provider}/{model}" if provider != "openai" else model
-            
-            # Extract last N messages for the API
+
             messages_for_api = []
-            for msg in context[-20:]:  # Limit to last 20 messages
+            for msg in context[-20:]:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 messages_for_api.append({"role": role, "content": content})
-            
-            # Prepare optional params
+
             optional_params = {}
             if self.llm_config.get("temperature"):
                 optional_params["temperature"] = self.llm_config["temperature"]
@@ -544,26 +573,20 @@ class Agent(ABC):
                 optional_params["max_tokens"] = self.llm_config["max_tokens"]
             if self.llm_config.get("top_p"):
                 optional_params["top_p"] = self.llm_config["top_p"]
-            
-            # Add API key from config if provided
             if self.llm_config.get("api_key"):
                 optional_params["api_key"] = self.llm_config["api_key"]
-            
-            # Make the API call via litellm
+
             response = await litellm.acompletion(
                 model=model_str,
                 messages=messages_for_api,
                 **optional_params
             )
-            
-            # Extract response content
+
             content = response.choices[0].message.content or ""
-            
-            # Extract usage info if available
             usage = getattr(response, 'usage', None)
             tokens_in = getattr(usage, 'prompt_tokens', 0) if usage else 0
             tokens_out = getattr(usage, 'completion_tokens', 0) if usage else 0
-            
+
             return {
                 "content": content,
                 "tool_calls": [],
@@ -571,9 +594,8 @@ class Agent(ABC):
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
             }
-            
+
         except ImportError:
-            # Fallback if litellm not installed
             logger.warning("litellm not installed, using placeholder response")
             return {
                 "content": "This is a placeholder response (litellm not available).",
@@ -586,27 +608,25 @@ class Agent(ABC):
                 "tool_calls": [],
                 "error": str(e),
             }
-    
+
     def _build_context(self, request: AgentRequest) -> list[dict[str, Any]]:
         """Build context for LLM call."""
         messages = [
             {"role": "system", "content": self.system_prompt},
         ]
-        
-        # Include memory context if available
+
         if request.context.get("memory"):
             messages.append({
                 "role": "system",
                 "content": f"Relevant memory:\n{request.context['memory']}"
             })
-        
-        # Include recent messages
+
         for msg in self.messages[-10:]:
             role = "assistant" if msg.role == MessageRole.ASSISTANT else "user"
             messages.append({"role": role, "content": msg.content})
-        
+
         return messages
-    
+
     def _parse_tool_calls(self, raw_calls: list[dict[str, Any]]) -> list[ToolCall]:
         """Parse tool calls from LLM response."""
         calls = []
@@ -616,13 +636,13 @@ class Agent(ABC):
                 arguments=raw.get("arguments", {}),
             ))
         return calls
-    
+
     def _reset(self) -> None:
         """Reset agent state after run."""
         self.messages.clear()
         self.current_tool_call = None
         self.thought_history.clear()
-    
+
     def get_state(self) -> dict[str, Any]:
         """Get current agent state."""
         return {
@@ -641,37 +661,31 @@ class Agent(ABC):
 
 class OrchestratorAgent(Agent):
     """Main orchestrator that delegates to specialized agents."""
-    
+
     def __init__(self, **kwargs: Any) -> None:
         kwargs["role"] = AgentRole.ORCHESTRATOR
         kwargs["agent_type"] = AgentType.HYBRID
         super().__init__(**kwargs)
         self.sub_agents: dict[str, Agent] = {}
-    
+
     def register_agent(self, agent: Agent) -> None:
         """Register a sub-agent."""
         self.sub_agents[agent.agent_id] = agent
-    
+
     async def think(self, request: AgentRequest) -> AgentMessage:
-        """Orchestrator decides which agent to delegate to."""
-        # Parse intent and delegate
-        # This is a simplified version
         return await super().think(request)
 
 
 class ReflectorAgent(Agent):
     """Metacognitive agent for self-improvement."""
-    
+
     def __init__(self, **kwargs: Any) -> None:
         kwargs["role"] = AgentRole.REFLECTOR
         kwargs["agent_type"] = AgentType.CRITIC
         super().__init__(**kwargs)
         self.insights: list[dict[str, Any]] = []
-    
+
     async def think(self, request: AgentRequest) -> AgentMessage:
-        """Analyze and reflect on previous agent actions."""
-        # Extract insights from recent interactions
-        # Suggest improvements
         return AgentMessage(
             role=MessageRole.ASSISTANT,
             content="Reflection complete.",
@@ -681,28 +695,22 @@ class ReflectorAgent(Agent):
 class AdversarialAgent(Agent):
     """
     Adversarial pair - acts as critic/auditor for executor agents.
-    
     Every executor has a paired critic for quality assurance.
     """
-    
+
     def __init__(self, target_agent_id: str, **kwargs: Any) -> None:
         kwargs["role"] = AgentRole.REFLECTOR
         kwargs["agent_type"] = AgentType.CRITIC
         super().__init__(**kwargs)
         self.target_agent_id = target_agent_id
-    
+
     async def think(self, request: AgentRequest) -> AgentMessage:
-        """Review and critique the executor's output."""
-        # Evaluate previous agent's response
-        # Check for errors, hallucinations, policy violations
         critique = self._generate_critique(request)
-        
         return AgentMessage(
             role=MessageRole.ASSISTANT,
             content=critique,
         )
-    
+
     def _generate_critique(self, request: AgentRequest) -> str:
-        """Generate critique of agent output."""
         # Placeholder - actual implementation uses LLM to evaluate
-        return "Critique: Output appears correct."
+        return "Critique placeholder"
