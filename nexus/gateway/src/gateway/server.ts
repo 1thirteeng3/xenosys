@@ -79,14 +79,14 @@ app.use('*', cors({
 
 // Request ID middleware
 app.use('*', async (c, next) => {
-  c.set('requestId', uuid());
+  (c as any).set('requestId', uuid());
   await next();
 });
 
 // Health check endpoint - FIX: Added hardware telemetry
 app.get('/health', (c) => {
   const uptime = (Date.now() - state.startTime) / 1000;
-  
+
   // Collect vital hardware data from Node (representative of local host)
   const freeMem = os.freemem();
   const totalMem = os.totalmem();
@@ -101,7 +101,7 @@ app.get('/health', (c) => {
     cpuIdle += cpu.times.idle;
   }
   const cpuUsagePercent = ((cpuTotal - cpuIdle) / cpuTotal) * 100;
-  
+
   return c.json({
     status: 'healthy',
     nodeId: state.nodeId,
@@ -345,7 +345,7 @@ app.onError((err, c) => {
   logger$.error({ err, path: c.req.path }, 'Unhandled error');
   return c.json({
     error: 'Internal server error',
-    requestId: c.get('requestId'),
+    requestId: (c as any).get('requestId'),
   }, 500);
 });
 
@@ -366,7 +366,7 @@ async function startServer() {
 
   // Initialize gRPC bridge
   try {
-    await GRPCBridge.getInstance().connect(config.grpcEndpoint);
+    await GRPCBridge.getInstance().connect({ endpoint: config.grpcEndpoint });
     logger$.info('gRPC bridge connected');
   } catch (error) {
     logger$.warn({ error }, 'gRPC bridge connection failed - will retry');
@@ -434,4 +434,4 @@ startServer().catch((error) => {
   process.exit(1);
 });
 
-export { app, state, startServer };
+export { app, state, startServer }

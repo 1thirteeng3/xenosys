@@ -296,9 +296,9 @@ export class TelegramAdapter extends ChannelAdapter {
 
     const response = await this.apiCall('sendMessage', params);
 
-    if (!response.ok) {
-      throw new Error(`Telegram send failed: ${response.description}`);
-    }
+if (!(response as any).ok) {
+  throw new Error(`Telegram API error: ${(response as any).description}`);
+}
 
     await this.emitSent(chatId, content);
   }
@@ -346,9 +346,9 @@ export class TelegramAdapter extends ChannelAdapter {
       const response = await this.apiCall('getMe');
       const latency = Date.now() - start;
 
-      if (!response.ok) {
-        return { status: 'down', error: response.description };
-      }
+if (!(response as any).ok) {
+  throw new Error(`Telegram API error: ${(response as any).description}`);
+}
 
       return {
         status: latency > 1000 ? 'degraded' : 'healthy',

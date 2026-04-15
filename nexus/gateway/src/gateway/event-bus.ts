@@ -86,7 +86,7 @@ export class EventBus extends EventEmitter {
     let count = 0;
     const typesSet = new Set(eventTypes);
     for (const [id, sub] of this.subscriptions) {
-      if (sub.eventTypes === '*' || [...typesSet].some(t => sub.eventTypes.has(t))) {
+      if (sub.eventTypes === '*' || (sub.eventTypes instanceof Set && sub.eventTypes.has(event.type as any))) {
         this.subscriptions.delete(id);
         count++;
       }
