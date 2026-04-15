@@ -16,6 +16,8 @@ services:
       - NODE_ENV=production
       - HOST=0.0.0.0
       - REDIS_HOST=redis
+      # CORREÇÃO 1: Aponta o Node.js para o contêiner do Python na rede Docker
+      - GRPC_ENDPOINT=core:50051
     depends_on:
       - core
       - redis
@@ -36,11 +38,14 @@ services:
       - PYTHONUNBUFFERED=1
       - GRPC_HOST=0.0.0.0
       - REDIS_HOST=redis
-      # Conexões com as memórias corrigidas
+      # Conexões de Rede Resolvidas pelo DNS interno do Docker
       - CORTEX_ENDPOINT=http://cortex:8000
       - OPENVIKING_ENDPOINT=http://openviking:8080
       - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001/sse
       - MEMBASE_MCP_URL=http://mcp-memory:9000/sse
+      # IMPORTANTE: Insira as chaves de API da sua LLM aqui para os agentes funcionarem
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     depends_on:
       - redis
     restart: unless-stopped
@@ -69,7 +74,7 @@ services:
     build: https://github.com/volcengine/OpenViking.git#main
     container_name: xenosys-openviking
     ports:
-      - "8080:8080"
+      - "8081:8080"
     volumes:
       - openviking-data:/data
     restart: unless-stopped
@@ -98,7 +103,9 @@ services:
     container_name: xenosys-mcp-memory
     ports:
       - "9000:9000"
-    # IMPORTANTE: Para o XenoSys Core ler via rede (SSE), usamos npx em modo servidor web
+    # CORREÇÃO 2: Forçando a porta via ambiente para o servidor MCP
+    environment:
+      - PORT=9000
     command: npx -y @modelcontextprotocol/server-memory
     volumes:
       - xenosys-l4-data:/app/memory_data
@@ -114,6 +121,9 @@ services:
     container_name: xenosys-mcp-obsidian
     ports:
       - "3001:3001"
+    # CORREÇÃO 2: Forçando a porta via ambiente para o servidor MCP
+    environment:
+      - PORT=3001
     command: npx -y @modelcontextprotocol/server-obsidian --dir /vault
     volumes:
       - obsidian-vault:/vault

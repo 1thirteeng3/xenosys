@@ -216,7 +216,7 @@ export class PluginManager {
           if (!instance) return;
 
           const key = `storage.event.${event}`;
-          const handlers = (instance.state.get(key) as Array<() => void>) ?? [];
+          const handlers = (instance.state.get(key) as Array<(data: unknown) => void>) ?? [];
           handlers.push(handler);
           instance.state.set(key, handlers);
         },
@@ -225,7 +225,7 @@ export class PluginManager {
           if (!instance) return;
 
           const key = `storage.event.${event}`;
-          const handlers = (instance.state.get(key) as Array<() => void>) ?? [];
+          const handlers = (instance.state.get(key) as Array<(data: unknown) => void>) ?? [];
           const idx = handlers.indexOf(handler);
           if (idx >= 0) handlers.splice(idx, 1);
           instance.state.set(key, handlers);
