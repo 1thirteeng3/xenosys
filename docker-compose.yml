@@ -38,11 +38,11 @@ services:
       - PYTHONUNBUFFERED=1
       - GRPC_HOST=0.0.0.0
       - REDIS_HOST=redis
-      # Conexões de Rede Resolvidas pelo DNS interno do Docker
-      - CORTEX_ENDPOINT=http://cortex:8000
-      - OPENVIKING_ENDPOINT=http://openviking:8080
-      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001/sse
-      - MEMBASE_MCP_URL=http://mcp-memory:9000/sse
+      # Explicit URLs for internal Docker DNS resolution
+      - CORTEX_URL=http://cortex:8000
+      - OPENVIKING_URL=http://openviking:8080
+      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001
+      - MCP_MEMORY_URL=http://mcp-memory:9000
       # IMPORTANTE: Insira as chaves de API da sua LLM aqui para os agentes funcionarem
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
