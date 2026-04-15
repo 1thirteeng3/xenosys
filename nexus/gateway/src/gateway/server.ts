@@ -7,7 +7,6 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
-import { websocket } from 'hono/ws';
 import { v4 as uuid } from 'uuid';
 import * as os from 'os';
 import pino from 'pino';
