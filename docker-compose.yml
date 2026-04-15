@@ -1,8 +1,7 @@
 # =============================================================================
-# XenoSys Docker Compose Configuration
+# XenoSys Docker Compose Configuration (V1.0.0-RC-PROD)
+# Production-Ready Infrastructure with L1-L4 Memory Layers
 # =============================================================================
-# Self-hosted deployment for VPS servers
-#
 # Installation:
 #   git clone https://github.com/org/xenosys.git
 #   cd xenosys
@@ -59,11 +58,14 @@ services:
       - GRPC_HOST=0.0.0.0
       - GRPC_PORT=50051
       - HOST=0.0.0.0
-      # Memory integrations
+      # L2 Memory - Semantic
       - CORTEX_ENDPOINT=http://cortex:8000
+      # L3 Memory - Episodic
       - OPENVIKING_ENDPOINT=http://openviking:8080
-      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3000/sse
-      - BRAINSYS_MCP_URL=http://mcp-brainsys:9000/sse
+      # L4 Memory - Contextual/Graph (NEW)
+      - MCP_MEMORY_URL=http://mcp-memory:9000/sse
+      # MCP Servers
+      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001/sse
       # Messaging
       - MESSAGE_BROKER=redis
       - REDIS_HOST=redis
@@ -72,12 +74,13 @@ services:
       - redis
       - cortex
       - openviking
+      - mcp-memory
     restart: unless-stopped
     networks:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # Redis (Message Broker & Cache)
+  # Redis (Message Broker & Cache - L1)
   # -------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -97,7 +100,7 @@ services:
       retries: 3
 
   # -------------------------------------------------------------------------
-  # Cortex (Semantic Memory - Vector Database)
+  # Cortex (L2 Semantic Memory - Vector Database)
   # -------------------------------------------------------------------------
   cortex:
     image: cortexproject/cortex:latest
@@ -119,7 +122,7 @@ services:
       retries: 3
 
   # -------------------------------------------------------------------------
-  # OpenViking (Episodic Memory - Session Logging)
+  # OpenViking (L3 Episodic Memory - Session Logging)
   # -------------------------------------------------------------------------
   openviking:
     image: openviking/openviking:latest
@@ -141,54 +144,35 @@ services:
       retries: 3
 
   # -------------------------------------------------------------------------
-  # MCP Server - Obsidian (2ndBrain / Long-term Memory)
+  # L4: Contextual Memory (Graph-based "Caderninho")
+  # Uses mcp-memory-service for knowledge graph storage
   # -------------------------------------------------------------------------
-  mcp-obsidian:
-    image: mcp/obsidian-mcp:latest
-    container_name: xenosys-mcp-obsidian
-    ports:
-      - "3000:3000"
-    environment:
-      - MCP_SERVER_NAME=obsidian
-      - OBSIDIAN_VAULT_PATH=/vault
-    volumes:
-      - obsidian-vault:/vault
-    restart: unless-stopped
-    networks:
-      - xenosys-network
-
-  # -------------------------------------------------------------------------
-  # MCP Server - BrainSys (Contextual Memory)
-  # -------------------------------------------------------------------------
-  mcp-brainsys:
-    image: mcp/brainsys-mcp:latest
-    container_name: xenosys-mcp-brainsys
+  mcp-memory:
+    image: node:20-alpine
+    container_name: xenosys-mcp-memory
     ports:
       - "9000:9000"
-    environment:
-      - MCP_SERVER_NAME=brainsys
-      - MEMBASE_ENDPOINT=http://membase:9090
+    # Install and run MCP memory server via npx
+    command: npx -y @modelcontextprotocol/server-memory
     volumes:
-      - brainsys-data:/data
+      # Local SQLite/graph storage (the "caderninho")
+      - xenosys-l4-data:/app/memory_data
     restart: unless-stopped
     networks:
       - xenosys-network
-    depends_on:
-      - membase
 
   # -------------------------------------------------------------------------
-  # Membase (Contextual Memory Storage)
+  # MCP Server - Obsidian (Long-term Memory / Notes)
   # -------------------------------------------------------------------------
-  membase:
-    image: membase/membase:latest
-    container_name: xenosys-membase
+  mcp-obsidian:
+    image: node:20-alpine
+    container_name: xenosys-mcp-obsidian
     ports:
-      - "9090:9090"
-    environment:
-      - MEMBASE_ADMIN=admin
-      - MEMBASE_PASSWORD=password
+      - "3001:3001"
+    # Run official MCP Obsidian server via npx
+    command: npx -y @modelcontextprotocol/server-obsidian --dir /vault
     volumes:
-      - membase-data:/data
+      - obsidian-vault:/vault
     restart: unless-stopped
     networks:
       - xenosys-network
@@ -213,7 +197,5 @@ volumes:
     name: xenosys-openviking-data
   obsidian-vault:
     name: xenosys-obsidian-vault
-  brainsys-data:
-    name: xenosys-brainsys-data
-  membase-data:
-    name: xenosys-membase-data
+  xenosys-l4-data:
+    name: xenosys-l4-data
