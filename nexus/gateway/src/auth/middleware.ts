@@ -167,8 +167,8 @@ export function rateLimitMiddleware(
 export function createSecurityRoutes(security: SecurityManager) {
   const routes = {
     
-    // Health check (no auth)
-    '/health': { GET: () => new Response(JSON.stringify({ status: 'ok' }), },
+    // Health check (no auth) - CORRIGIDO AQUI
+    '/health': { GET: () => new Response(JSON.stringify({ status: 'ok' })) },
     
     // Generate API key (requires admin JWT)
     '/api/v1/security/keys': {
@@ -191,7 +191,7 @@ export function createSecurityRoutes(security: SecurityManager) {
     },
     
     // List API keys (requires admin JWT)
-    '/api/v1/security/keys': {
+    '/api/v1/security/keys/list': {
       GET: async (c: Context) => {
         if (!security.apiKeys) {
           return c.json({ error: 'API keys not configured' }, 500);

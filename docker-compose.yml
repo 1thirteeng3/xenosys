@@ -1,86 +1,54 @@
 # =============================================================================
 # XenoSys Docker Compose Configuration (V1.0.0-RC-PROD)
-# Production-Ready Infrastructure with L1-L4 Memory Layers
-# =============================================================================
-# Installation:
-#   git clone https://github.com/org/xenosys.git
-#   cd xenosys
-#   cp .env.example .env
-#   docker compose up -d
 # =============================================================================
 
 services:
   # -------------------------------------------------------------------------
-  # Gateway Service (Node.js)
+  # 1. Gateway Service (Node.js)
   # -------------------------------------------------------------------------
   gateway:
     build:
       context: ./nexus/gateway
-      dockerfile: Dockerfile
     container_name: xenosys-gateway
     ports:
-      - "3000:3000"      # HTTP API
-      - "50051:50051"    # gRPC
+      - "3000:3000"
     environment:
       - NODE_ENV=production
-      - PORT=3000
       - HOST=0.0.0.0
-      - GRPC_PORT=50051
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - CORE_HOST=core
-      - CORE_PORT=50051
     depends_on:
       - core
       - redis
     restart: unless-stopped
     networks:
       - xenosys-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # -------------------------------------------------------------------------
-  # Core Service (Python)
+  # 2. Core Service (Python)
   # -------------------------------------------------------------------------
   core:
     build:
       context: ./nexus/core
-      dockerfile: Dockerfile
     container_name: xenosys-core
     ports:
-      - "50051:50051"    # gRPC
+      - "50051:50051"
     environment:
       - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
       - GRPC_HOST=0.0.0.0
-      - GRPC_PORT=50051
-      - HOST=0.0.0.0
-      # L2 Memory - Semantic
-      - CORTEX_ENDPOINT=http://cortex:8000
-      # L3 Memory - Episodic
-      - OPENVIKING_ENDPOINT=http://openviking:8080
-      # L4 Memory - Contextual/Graph (NEW)
-      - MCP_MEMORY_URL=http://mcp-memory:9000/sse
-      # MCP Servers
-      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001/sse
-      # Messaging
-      - MESSAGE_BROKER=redis
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Conexões com as memórias corrigidas
+      - CORTEX_ENDPOINT=http://cortex:8000
+      - OPENVIKING_ENDPOINT=http://openviking:8080
+      - OBSIDIAN_MCP_URL=http://mcp-obsidian:3001/sse
+      - MEMBASE_MCP_URL=http://mcp-memory:9000/sse
     depends_on:
       - redis
-      - cortex
-      - openviking
-      - mcp-memory
     restart: unless-stopped
     networks:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # Redis (Message Broker & Cache - L1)
+  # 3. Redis (Message Broker & Cache)
   # -------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -93,83 +61,59 @@ services:
     restart: unless-stopped
     networks:
       - xenosys-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   # -------------------------------------------------------------------------
-  # Cortex (L2 Semantic Memory - Vector Database)
-  # -------------------------------------------------------------------------
-  cortex:
-    image: cortexproject/cortex:latest
-    container_name: xenosys-cortex
-    ports:
-      - "8000:8000"
-    environment:
-      - CORTEX_SERVER_PORT=8000
-      - CORTEX_STORE_PROMETHEUS_PORT=8001
-    volumes:
-      - cortex-data:/data
-    restart: unless-stopped
-    networks:
-      - xenosys-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # -------------------------------------------------------------------------
-  # OpenViking (L3 Episodic Memory - Session Logging)
+  # 4. OpenViking (Memória Episódica da Volcengine)
   # -------------------------------------------------------------------------
   openviking:
-    image: openviking/openviking:latest
+    build: https://github.com/volcengine/OpenViking.git#main
     container_name: xenosys-openviking
     ports:
       - "8080:8080"
-    environment:
-      - PORT=8080
-      - LOG_LEVEL=info
     volumes:
       - openviking-data:/data
     restart: unless-stopped
     networks:
       - xenosys-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # -------------------------------------------------------------------------
-  # L4: Contextual Memory (Graph-based "Caderninho")
-  # Uses mcp-memory-service for knowledge graph storage
+  # 5. Cortex (Memória Semântica da Abbacus Group)
+  # -------------------------------------------------------------------------
+  cortex:
+    build: https://github.com/abbacusgroup/cortex.git#main
+    container_name: xenosys-cortex
+    ports:
+      - "8000:8000"
+    volumes:
+      - cortex-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 6. BrainSys (Graph-based Contextual Memory / L4)
   # -------------------------------------------------------------------------
   mcp-memory:
     image: node:20-alpine
     container_name: xenosys-mcp-memory
     ports:
       - "9000:9000"
-    # Install and run MCP memory server via npx
+    # IMPORTANTE: Para o XenoSys Core ler via rede (SSE), usamos npx em modo servidor web
     command: npx -y @modelcontextprotocol/server-memory
     volumes:
-      # Local SQLite/graph storage (the "caderninho")
       - xenosys-l4-data:/app/memory_data
     restart: unless-stopped
     networks:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # MCP Server - Obsidian (Long-term Memory / Notes)
+  # 7. MCP Server - Obsidian (Long-term Memory / Notes)
   # -------------------------------------------------------------------------
   mcp-obsidian:
     image: node:20-alpine
     container_name: xenosys-mcp-obsidian
     ports:
       - "3001:3001"
-    # Run official MCP Obsidian server via npx
     command: npx -y @modelcontextprotocol/server-obsidian --dir /vault
     volumes:
       - obsidian-vault:/vault
