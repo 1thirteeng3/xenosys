@@ -8,6 +8,7 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { v4 as uuid } from 'uuid';
 import * as os from 'os';
+import pino from 'pino';
 
 import { eventBus } from './event-bus.js';
 import { type Message, type AgentRequest, type Session, AgentRequestSchema } from './types.js';
@@ -26,12 +27,10 @@ const config = {
   corsOrigins: process.env['CORS_ORIGINS']?.split(',') ?? ['*'],
 };
 
-// Use require to bypass ESM import issues with pino
-const pinoModule = require('pino');
+// Use dynamic import for pino to bypass ESM typing issues
+const pinoFn = pino as unknown as (opts: unknown) => unknown;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const logger$: any = typeof pinoModule === 'function' ? pinoModule({ 
-  level: config.logLevel,
-}) : pinoModule.default({ 
+const logger$: any = pinoFn({ 
   level: config.logLevel,
 });
 
