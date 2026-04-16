@@ -15,8 +15,9 @@ services:
     environment:
       - NODE_ENV=production
       - HOST=0.0.0.0
-      - REDIS_HOST=xenosys-redis
-      - GRPC_ENDPOINT=xenosys-core:50051
+      - REDIS_HOST=redis
+      # CORREÇÃO 1: Aponta o Node.js para o contêiner do Python na rede Docker
+      - GRPC_ENDPOINT=core:50051
     depends_on:
       - core
       - redis
@@ -31,34 +32,27 @@ services:
     build:
       context: ./nexus/core
     container_name: xenosys-core
+    restart: unless-stopped
     env_file:
       - .env
     environment:
-      - PYTHONUNBUFFERED=1
-      - GRPC_HOST=0.0.0.0
-      - GRPC_PORT=50051
-      - REDIS_HOST=xenosys-redis
-      # URLs para resolução interna via Docker DNS
+      # Roteamento estrito para os serviços na rede interna do Docker
       - CORTEX_URL=http://xenosys-cortex:8000
       - OPENVIKING_URL=http://xenosys-openviking:8080
-      - MCP_MEMORY_URL=http://xenosys-mcp-memory:9000
+      - MCP_MEMORY_URL=http://xenosys-mcp-memory:3000
       - OBSIDIAN_VAULT_PATH=/app/obsidian_vault
-      # Chaves de API (carregadas via .env ou shell)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Binding do gRPC para escutar o Gateway
+      - GRPC_HOST=0.0.0.0
+      - GRPC_PORT=50051
     ports:
       - "50051:50051"
     depends_on:
       - cortex
       - openviking
       - redis
-      - mcp-memory
-    volumes:
-      - obsidian-vault:/app/obsidian_vault
-    restart: unless-stopped
     networks:
       - xenosys-network
-
   # -------------------------------------------------------------------------
   # 3. Redis (Message Broker & Cache)
   # -------------------------------------------------------------------------
@@ -110,11 +104,30 @@ services:
     container_name: xenosys-mcp-memory
     ports:
       - "9000:9000"
+    # CORREÇÃO 2: Forçando a porta via ambiente para o servidor MCP
     environment:
       - PORT=9000
-    command: sh -c "npx -y supergateway --port 9000 --ssePath /sse --messagePath /message --stdio \"npx -y @modelcontextprotocol/server-memory\""
+    command: npx -y @modelcontextprotocol/server-memory
     volumes:
       - xenosys-l4-data:/app/memory_data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 7. MCP Server - Obsidian (Long-term Memory / Notes)
+  # -------------------------------------------------------------------------
+  mcp-obsidian:
+    image: node:20-alpine
+    container_name: xenosys-mcp-obsidian
+    ports:
+      - "3001:3001"
+    # CORREÇÃO 2: Forçando a porta via ambiente para o servidor MCP
+    environment:
+      - PORT=3001
+    command: npx -y @modelcontextprotocol/server-obsidian --dir /vault
+    volumes:
+      - obsidian-vault:/vault
     restart: unless-stopped
     networks:
       - xenosys-network
