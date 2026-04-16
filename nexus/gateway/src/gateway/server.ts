@@ -27,7 +27,9 @@ const config = {
   corsOrigins: process.env['CORS_ORIGINS']?.split(',') ?? ['*'],
 };
 
-const logger$ = pino({ 
+// Use any to bypass pino typing issues with different pino versions
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const logger$: any = pino({ 
   level: config.logLevel,
 });
 
