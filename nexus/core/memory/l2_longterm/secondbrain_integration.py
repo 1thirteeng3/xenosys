@@ -1,23 +1,23 @@
 from __future__ import annotations
 
- import asyncio
- import logging
- import os
- from abc import ABC, abstractmethod
- from dataclasses import dataclass, field
- from datetime import datetime
- from pathlib import Path
- from typing import Any, Dict, List, Optional, Union
- from uuid import UUID, uuid4
+import asyncio
+import logging
+import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+from uuid import UUID, uuid4
 
- logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
- # ============================================================================
- # Domínio e Modelos de Dados
- # ============================================================================
+# ============================================================================
+# Domínio e Modelos de Dados
+# ============================================================================
 
- @dataclass
- class Note:
+@dataclass
+class Note:
      """Representação universal de uma nota no sistema XenoSys."""
      title: str
      content: str
@@ -27,16 +27,16 @@ from __future__ import annotations
      metadata: Dict[str, Any] = field(default_factory=dict)
      modified_at: datetime = field(default_factory=datetime.utcnow)
 
- @dataclass
- class NoteSearchResult:
+@dataclass
+class NoteSearchResult:
      note: Note
      score: float = 1.0
 
- # ============================================================================
- # Interfaces de Transporte (Strategy Pattern)
- # ============================================================================
+# ============================================================================
+# Interfaces de Transporte (Strategy Pattern)
+# ============================================================================
 
- class ObsidianTransport(ABC):
+class ObsidianTransport(ABC):
      """Interface abstrata para comunicação com o Obsidian."""
      
      @abstractmethod
@@ -51,11 +51,11 @@ from __future__ import annotations
      @abstractmethod
      async def search(self, query: str, limit: int = 10) -> List[NoteSearchResult]: ...
 
- # ============================================================================
- # Implementação 1: Sistema de Arquivos (Local/CLI)
- # ============================================================================
+# ============================================================================
+# Implementação 1: Sistema de Arquivos (Local/CLI)
+# ============================================================================
 
- class LocalFileSystemTransport(ObsidianTransport):
+class LocalFileSystemTransport(ObsidianTransport):
      """Acesso direto ao Vault via File System para máxima performance."""
      
      def __init__(self, vault_path: Optional[str] = None):
@@ -108,11 +108,11 @@ from __future__ import annotations
                  results.append(NoteSearchResult(note=note))
          return results
 
- # ============================================================================
- # Implementação 2: MCP SSE (Remoto)
- # ============================================================================
+# ============================================================================
+# Implementação 2: MCP SSE (Remoto)
+# ============================================================================
 
- class MCPRemoteTransport(ObsidianTransport):
+class MCPRemoteTransport(ObsidianTransport):
      """Acesso via Protocolo MCP (Model Context Protocol) sobre SSE."""
      
      def __init__(self, url: str):
@@ -155,11 +155,11 @@ from __future__ import annotations
          # Implementação similar à original chamando a tool 'search_notes'
          return [] 
 
- # ============================================================================
- # Gerenciador do SecondBrain (Orquestrador)
- # ============================================================================
+# ============================================================================
+# Gerenciador do SecondBrain (Orquestrador)
+# ============================================================================
 
- class SecondBrainStore:
+class SecondBrainStore:
      """
      L2 Long-term Memory.
      Pode operar em modo LOCAL (Filesystem) ou REMOTO (MCP).
