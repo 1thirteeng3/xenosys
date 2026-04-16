@@ -84,11 +84,17 @@ export class EventBus extends EventEmitter {
     }
 
     let count = 0;
-    const typesSet = new Set(eventTypes);
     for (const [id, sub] of this.subscriptions) {
-      if (sub.eventTypes === '*' || (sub.eventTypes instanceof Set && sub.eventTypes.has(event.type as any))) {
+      if (sub.eventTypes === '*') {
         this.subscriptions.delete(id);
         count++;
+      } else if (sub.eventTypes instanceof Set) {
+        // Verifica de forma segura se há interseção de eventos
+        const hasIntersection = eventTypes.some(type => (sub.eventTypes as Set<string>).has(type));
+        if (hasIntersection) {
+          this.subscriptions.delete(id);
+          count++;
+        }
       }
     }
     return count;
@@ -98,7 +104,6 @@ export class EventBus extends EventEmitter {
    * Publish an event
    */
   async publish(event: GatewayEvent): Promise<void> {
-    // Validate event schema
     const parsed = GatewayEventSchema.safeParse(event);
     if (!parsed.success) {
       console.error('Invalid event:', parsed.error);
@@ -107,7 +112,6 @@ export class EventBus extends EventEmitter {
 
     const validEvent = parsed.data;
 
-    // Add to queue if processing
     if (this.processing) {
       if (this.eventQueue.length < this.maxQueueSize) {
         this.eventQueue.push(validEvent);
@@ -127,19 +131,12 @@ export class EventBus extends EventEmitter {
     const handlers: Array<{ handler: EventHandler; once: boolean }> = [];
 
     for (const sub of this.subscriptions.values()) {
-      // Check if subscription matches event type
-      const matches =
-        sub.eventTypes === '*' || sub.eventTypes.has(event.type);
-
+      const matches = sub.eventTypes === '*' || sub.eventTypes.has(event.type);
       if (!matches) continue;
-
-      // Check custom filter
       if (sub.filter && !sub.filter(event)) continue;
-
       handlers.push({ handler: sub.handler, once: sub.once });
     }
 
-    // Remove 'once' subscriptions
     for (const { handler: _handler, once } of handlers) {
       if (once) {
         for (const [id, sub] of this.subscriptions) {
@@ -151,7 +148,6 @@ export class EventBus extends EventEmitter {
       }
     }
 
-    // Execute handlers (don't await to not block)
     for (const { handler } of handlers) {
       try {
         const result = handler(event);
@@ -163,51 +159,33 @@ export class EventBus extends EventEmitter {
       }
     }
 
-    // Process queued events
     this.scheduleQueueProcessing();
   }
 
-  /**
-   * Schedule queue processing
-   */
   private scheduleQueueProcessing(): void {
     if (this.processing || this.eventQueue.length === 0) return;
-
     setImmediate(() => this.processQueue());
   }
 
-  /**
-   * Process queued events in batches
-   */
   private async processQueue(): Promise<void> {
     if (this.eventQueue.length === 0) return;
-
     this.processing = true;
 
     while (this.eventQueue.length > 0) {
       const batch = this.eventQueue.splice(0, this.processBatchSize);
-
       for (const event of batch) {
         await this.processEvent(event);
       }
-
-      // Yield to event loop between batches
       await new Promise(resolve => setImmediate(resolve));
     }
 
     this.processing = false;
   }
 
-  /**
-   * Get subscription count
-   */
   getSubscriptionCount(): number {
     return this.subscriptions.size;
   }
 
-  /**
-   * Get event type counts
-   */
   getEventCounts(): Record<string, number> {
     const counts: Record<string, number> = {};
     for (const sub of this.subscriptions.values()) {
@@ -223,5 +201,4 @@ export class EventBus extends EventEmitter {
   }
 }
 
-// Singleton instance
 export const eventBus = new EventBus();

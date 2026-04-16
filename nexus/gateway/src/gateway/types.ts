@@ -14,7 +14,7 @@ export const MessageSchema = z.object({
   channel: z.string(),
   userId: z.string(),
   content: z.string(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   timestamp: z.number(),
   attachments: z.array(z.object({
     type: z.enum(['image', 'file', 'audio', 'video']),
@@ -30,10 +30,10 @@ export const ChannelConfigSchema = z.object({
   id: z.string(),
   type: z.string(),
   enabled: z.boolean().default(true),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   auth: z.object({
     type: z.enum(['none', 'api_key', 'oauth2', 'webhook_secret']),
-    credentials: z.record(z.string()).optional(),
+    credentials: z.record(z.string(), z.string()).optional(),
   }).optional(),
 });
 
@@ -43,8 +43,8 @@ export const UserSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
   email: z.string().email().optional(),
-  channels: z.record(z.string()).optional(), // channel -> external_id
-  metadata: z.record(z.unknown()).optional(),
+  channels: z.record(z.string(), z.string()).optional(), // channel -> external_id
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.number(),
   lastSeenAt: z.number().optional(),
 });
@@ -97,7 +97,7 @@ export const ACPMessageSchema = z.object({
     nodeId: z.string(),
     agentId: z.string().optional(),
   }).optional(),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
   metadata: z.object({
     correlationId: z.string().optional(),
     ttl: z.number().optional(),
@@ -120,7 +120,7 @@ export const AgentRequestSchema = z.object({
   context: z.object({
     agentId: z.string().optional(),
     entityId: z.string().optional(),
-    memoryFilters: z.record(z.unknown()).optional(),
+    memoryFilters: z.record(z.string(), z.unknown()).optional(),
     systemPrompt: z.string().optional(),
   }).optional(),
   options: z.object({
@@ -148,7 +148,7 @@ export const AgentResponseSchema = z.object({
   }).optional(),
   toolCalls: z.array(z.object({
     name: z.string(),
-    args: z.record(z.unknown()),
+    args: z.record(z.string(), z.unknown()),
     result: z.string().optional(),
     error: z.string().optional(),
   })).optional(),
@@ -177,7 +177,7 @@ export const PluginSchema = z.object({
   description: z.string().optional(),
   capabilities: z.array(PluginCapabilitySchema),
   dependencies: z.array(z.string()).optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
   permissions: z.array(z.string()).optional(),
 });
 
@@ -248,13 +248,9 @@ export const GatewayEventSchema = z.object({
   timestamp: z.number(),
   sessionId: z.string().optional(),
   userId: z.string().optional(),
-  data: z.record(z.unknown()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type GatewayEvent = z.infer<typeof GatewayEventSchema>;
-
-// ============================================================================
-// Re-exports
-// ============================================================================
 
 export { z } from 'zod';

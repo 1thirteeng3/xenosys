@@ -1,5 +1,5 @@
 # =============================================================================
-# XenoSys Gateway Dockerfile - Backup & Restore Strategy
+# XenoSys Gateway Dockerfile - Strict Quality Build
 # =============================================================================
 
 FROM node:20-alpine AS builder
@@ -7,7 +7,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-# 1. Higieniza o package.json uma ÚNICA vez
+# 1. Higieniza as dependências "workspace:*" quebradas
 RUN node -e "\
   const fs = require('fs'); \
   if (fs.existsSync('package-lock.json')) fs.unlinkSync('package-lock.json'); \
@@ -20,26 +20,20 @@ RUN node -e "\
   fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2)); \
 "
 
-# 2. Instala as dependências e o uuid no arquivo já limpo
-RUN npm install uuid --save
+# 2. Instala os pacotes, incluindo os pacotes tipados que faltavam
+RUN npm install uuid zod yaml --save
 RUN npm install --include=dev
 
-# 3. A MÁGICA: Salva uma cópia de segurança do package.json perfeito
+# 3. Restaurações de segurança
 RUN cp package.json package-pristine.json
-
-# 4. Copia o código da sua máquina (isso traz o arquivo sujo de volta)
 COPY . .
-
-# 5. A MÁGICA 2: Restaura o nosso arquivo perfeito por cima do arquivo sujo!
 RUN mv package-pristine.json package.json
 
-# 6. Resolve imports e compila o projeto
-RUN sed -i '/hono\/ws/d' src/gateway/server.ts || true
-RUN sed -i "s/c.set('requestId', uuid());/(c as any).set('requestId', uuid());/g" src/gateway/server.ts || true
+# 4. COMPILAÇÃO ESTREITA E RIGOROSA (SEM TS-IGNORE!)
 RUN npm run build
 RUN node -e "const fs=require('fs'); fs.cpSync('src/proto', 'dist/proto', {recursive: true});"
 
-# 7. Agora o prune lê o arquivo perfeito e funciona 100%
+# 5. Prune
 RUN npm prune --omit=dev
 
 # -----------------------------------------------------------------------------
@@ -50,7 +44,6 @@ ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3000
 
-# Copia os artefatos limpos para a imagem final
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules

@@ -3,20 +3,25 @@
     "target": "ES2022",
     "module": "Node16",
     "moduleResolution": "Node16",
+    "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./src",
-    
-    "strict": false,
-    "noImplicitAny": false,
-    "strictNullChecks": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
     "exactOptionalPropertyTypes": false,
-    "noImplicitReturns": false,
-    "noImplicitThis": false,
-    
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
+    "types": ["node"],
     "paths": {
       "@/*": ["./src/*"]
     }
