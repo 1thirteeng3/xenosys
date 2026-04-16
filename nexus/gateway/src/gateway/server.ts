@@ -27,9 +27,7 @@ const config = {
   corsOrigins: process.env['CORS_ORIGINS']?.split(',') ?? ['*'],
 };
 
-const logger$ = pino.default ? pino.default({ 
-  level: config.logLevel,
-}) : pino({ 
+const logger$ = pino({ 
   level: config.logLevel,
 });
 
@@ -41,7 +39,7 @@ interface GatewayState {
 }
 
 const state: GatewayState = { 
-  nodeId: "gateway-" + uuid().slice(0, 8), 
+  nodeId: 'gateway-' + uuid().slice(0, 8), 
   startTime: Date.now(), 
   sessions: new Map(), 
   connectedClients: new Set(),
@@ -49,7 +47,7 @@ const state: GatewayState = {
 
 const app = new Hono<{ Variables: GatewayState & { requestId: string } }>();
 
-app.use('*', logger((msg: string, args: Record<string, unknown>) => logger$.info({ args }, msg)));
+app.use('*', logger((msg: string) => logger$.info(msg)));
 app.use('*', cors({ origin: config.corsOrigins, credentials: true }));
 
 app.use('*', async (c, next) => { 
@@ -72,6 +70,7 @@ app.get('/health', (c) => {
     cpuIdle += cpu.times.idle; 
   } 
   const cpuUsagePercent = ((cpuTotal - cpuIdle) / cpuTotal) * 100; 
+
   return c.json({ 
     status: 'healthy', 
     nodeId: state.nodeId, 
@@ -129,18 +128,23 @@ api.post('/agent/execute', async (c) => {
     const request = AgentRequestSchema.parse(body); 
     const session = state.sessions.get(request.sessionId); 
     if (!session) return c.json({ error: 'Session not found' }, 404); 
+
     eventBus.publish({ 
       type: 'agent_started', timestamp: Date.now(), sessionId: request.sessionId, userId: request.userId, data: { channel: request.channel }, 
     }); 
+
     const bridge = GRPCBridge.getInstance(); 
     const response = await bridge.executeAgent(request); 
+
     session.messageCount++; 
     session.lastActivityAt = Date.now(); 
     state.sessions.set(session.id, session); 
+
     eventBus.publish({ 
       type: 'agent_completed', timestamp: Date.now(), sessionId: request.sessionId, 
       data: { messageId: response.messageId, done: response.done, tokens: response.metadata?.tokensOut }, 
     }); 
+
     return c.json(response); 
   } catch (error) { 
     const message = error instanceof Error ? error.message : 'Unknown error'; 
@@ -166,16 +170,20 @@ async function startServer() {
   } catch (error) { 
     logger$.warn({ error }, 'gRPC bridge connection failed - will retry'); 
   } 
+
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }); 
-  logger$.info("Server listening on " + config.host + ":" + config.port); 
+  logger$.info('Server listening on ' + config.host + ':' + config.port); 
+
   const shutdown = async() => { 
     logger$.info('Shutdown signal received'); 
     server.close(); 
     await GRPCBridge.getInstance().disconnect(); 
     process.exit(0); 
   }; 
+
   process.on('SIGTERM', shutdown); 
   process.on('SIGINT', shutdown);
+
   return server;
 }
 
