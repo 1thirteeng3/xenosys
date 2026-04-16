@@ -3,8 +3,7 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devPath": "http://localhost:5173",
-    "distDir": "../dist",
-    "devtools": true
+    "distDir": "../dist"
   },
   "package": {
     "productName": "XenoSys",
@@ -16,12 +15,7 @@
       "shell": {
         "all": false,
         "open": true,
-        "execute": true,
-        "sidecar": true,
-        "spawn": true
-      },
-      "store": {
-        "all": true
+        "execute": true
       },
       "window": {
         "all": true
@@ -58,10 +52,6 @@
       "resources": [
         "resources/*"
       ],
-      "externalBin": [
-        "sidecars/gateway",
-        "sidecars/core"
-      ],
       "windows": {
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",
@@ -81,7 +71,6 @@
         "minWidth": 800,
         "minHeight": 600
       }
-    ],
-    "sidecar": true
+    ]
   }
 }
