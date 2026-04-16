@@ -12,7 +12,6 @@
   },
   "tauri": {
     "allowlist": {
-      "all": false,
       "shell": {
         "all": false,
         "open": true,
@@ -20,25 +19,14 @@
         "sidecar": true,
         "spawn": true
       },
-      "store": {
-        "all": true
-      },
-      "window": {
-        "all": true
-      },
+      "window": { "all": true },
       "fs": {
         "all": true,
         "scope": ["$APP/*", "$RESOURCE/*", "$TEMP/*"]
       },
-      "path": {
-        "all": true
-      },
-      "dialog": {
-        "all": true
-      },
-      "os": {
-        "all": true
-      },
+      "path": { "all": true },
+      "dialog": { "all": true },
+      "os": { "all": true },
       "http": {
         "all": true,
         "scope": ["http://*", "https://*"]
@@ -61,12 +49,7 @@
       "externalBin": [
         "sidecars/gateway",
         "sidecars/core"
-      ],
-      "windows": {
-        "certificateThumbprint": null,
-        "digestAlgorithm": "sha256",
-        "timestampUrl": ""
-      }
+      ]
     },
     "security": {
       "csp": null
@@ -81,7 +64,6 @@
         "minWidth": 800,
         "minHeight": 600
       }
-    ],
-    "sidecar": true
+    ]
   }
 }
