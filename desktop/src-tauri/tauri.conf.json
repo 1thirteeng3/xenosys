@@ -11,6 +11,7 @@
   },
   "tauri": {
     "allowlist": {
+<<<<<<< HEAD
       "shell": { "open": true, "execute": true },
       "window": { "all": true },
       "fs": { "all": true, "scope": ["$APP/*", "$RESOURCE/*", "$TEMP/*"] },
@@ -18,11 +19,40 @@
       "dialog": { "all": true },
       "os": { "all": true },
       "http": { "all": true, "scope": ["http://*", "https://*"] }
+=======
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true,
+        "execute": true
+      },
+      "window": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": ["$APP/*", "$RESOURCE/*", "$TEMP/*"]
+      },
+      "path": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "os": {
+        "all": true
+      },
+      "http": {
+        "all": true,
+        "scope": ["http://*", "https://*"]
+      }
+>>>>>>> ab130ef175b0638a61b22c26b2e96d99c639af91
     },
     "bundle": {
       "active": true,
       "targets": "all",
       "identifier": "com.xenosys.desktop",
+<<<<<<< HEAD
       "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
     },
     "security": { "csp": null },
@@ -33,5 +63,37 @@
       "width": 1200,
       "height": 800
     }]
+=======
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "resources": [
+        "resources/*"
+      ],
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": ""
+      }
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "XenoSys",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ]
+>>>>>>> ab130ef175b0638a61b22c26b2e96d99c639af91
   }
 }
