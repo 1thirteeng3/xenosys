@@ -182,3 +182,26 @@ class SecondBrainStore:
 
      async def find(self, query: str) -> List[NoteSearchResult]:
          return await self.transport.search(query)
+
+
+def get_secondbrain_store(mode: str = "local") -> SecondBrainStore:
+    """
+    Factory function to create SecondBrainStore.
+    
+    Args:
+        mode: "local" for filesystem, "mcp" for remote MCP transport
+    
+    Returns:
+        Initialized SecondBrainStore instance
+    """
+    import os
+    
+    if mode == "mcp":
+        transport = MCPRemoteTransport(
+            endpoint=os.environ.get("MCP_SECONDBRAIN_ENDPOINT", "http://mcp-memory:9000")
+        )
+    else:
+        base_path = os.environ.get("SECONDBRAIN_PATH", "/data/secondbrain")
+        transport = LocalFileSystemTransport(base_path=base_path)
+    
+    return SecondBrainStore(transport=transport)
