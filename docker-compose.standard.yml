@@ -1,16 +1,9 @@
 # =============================================================================
-# XenoSys Docker Compose Configuration
+# XenoSys Docker Compose - VPS Standard Version
 # =============================================================================
-# Choose your version:
-#   - STANDARD (no local LLM): docker compose -f docker-compose.yml up -d
-#   - PLUS (with local LLM):  docker compose -f docker-compose.standard.yml up -d
-#                           or docker compose -f docker-compose.plus.yml up -d
-# 
-# For more details, see docker-compose.standard.yml and docker-compose.plus.yml
+# This is the STANDARD version - all features EXCEPT local LLM
+# Usage: docker compose -f docker-compose.standard.yml up -d
 # =============================================================================
-
-# This file is the default. Use docker-compose.standard.yml or docker-compose.plus.yml
-# for specific versions. See SPECIFICATIONS.md for more information.
 
 services:
   # -------------------------------------------------------------------------
@@ -27,6 +20,8 @@ services:
       - HOST=0.0.0.0
       - REDIS_HOST=xenosys-redis
       - GRPC_ENDPOINT=xenosys-core:50051
+      # Use API mode (no local LLM)
+      - LLM_MODE=api
     depends_on:
       - core
       - redis
@@ -48,12 +43,13 @@ services:
       - GRPC_HOST=0.0.0.0
       - GRPC_PORT=50051
       - REDIS_HOST=xenosys-redis
-      # URLs para resolução interna via Docker DNS
+      - LLM_MODE=api
+      # Internal service URLs
       - CORTEX_URL=http://xenosys-cortex:8000
       - OPENVIKING_URL=http://xenosys-openviking:8080
       - MCP_MEMORY_URL=http://xenosys-mcp-memory:9000
       - OBSIDIAN_VAULT_PATH=/app/obsidian_vault
-      # Chaves de API (carregadas via .env ou shell)
+      # API Keys (set in .env or shell)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
@@ -85,7 +81,7 @@ services:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # 4. OpenViking (Memória Episódica da Volcengine)
+  # 4. OpenViking (Episodic Memory - Volcengine)
   # -------------------------------------------------------------------------
   openviking:
     build: https://github.com/volcengine/OpenViking.git#main
@@ -99,7 +95,7 @@ services:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # 5. Cortex (Memória Semântica da Abbacus Group)
+  # 5. Cortex (Semantic Memory - Abbacus)
   # -------------------------------------------------------------------------
   cortex:
     build: https://github.com/abbacusgroup/cortex.git#main
@@ -113,7 +109,7 @@ services:
       - xenosys-network
 
   # -------------------------------------------------------------------------
-  # 6. BrainSys (Graph-based Contextual Memory / L4)
+  # 6. MCP Memory Server (L4 Contextual Memory)
   # -------------------------------------------------------------------------
   mcp-memory:
     image: node:20-alpine

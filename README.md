@@ -18,36 +18,63 @@ XenoSys is a **Hybrid AI Personal Operating System** that gives you:
 
 ### Support Matrix
 
-| Platform | Mode | Status |
-|----------|------|--------|
-| Windows Desktop | Local + Cloud | ✅ Ready |
-| macOS Desktop | Local + Cloud | ✅ Ready |
-| Linux Desktop | Local + Cloud | ✅ Ready |
-| iOS Mobile | Cloud Only | ✅ Ready |
-| Android Mobile | Cloud Only | ✅ Ready |
-| VPS (Docker) | Cloud Only | ✅ Ready |
+| Platform | Standard | Plus | Notes |
+|-----------|----------|------|-------|
+| Windows Desktop | ✅ | ✅ | API mode, can add local LLM |
+| macOS Desktop | ✅ | ✅ | API mode, can add local LLM |
+| Linux Desktop | ✅ | ✅ | API mode, can add local LLM |
+| iOS Mobile | Cloud Only | - | Connects to Desktop/VPS |
+| Android Mobile | Cloud Only | - | Connects to Desktop/VPS |
+| VPS (Docker) | ✅ | ✅ | API mode, can add local LLM |
 
 ---
 
 ## 2. Quick Start
 
-### Desktop (Windows/macOS/Linux)
+### Step 1: Choose Your Platform
 
-**No terminal required!** Download the installer:
+#### Desktop (Windows/macOS/Linux)
+Download the installer for your platform:
+- **Desktop Standard** (~200MB): All features, uses API mode
+- **Desktop Plus** (~2GB): All features + local LLM (Ollama)
 
 1. Go to https://xenosys.ai/download
-2. Download `XenoSys-Setup-1.0.0.exe` (Windows) or `.dmg` (macOS)
+2. Download `XenoSys-Setup.exe` (Windows) or `.dmg` (macOS)
 3. Run the installer (Next → Next → Finish)
-4. App opens automatically
+4. App opens to Step 2: Initial Settings Panel
 
-### Mobile (iOS/Android)
+#### VPS (Docker)
+Choose your version:
+- **VPS Standard**: `docker compose -f docker-compose.standard.yml up -d`
+- **VPS Plus** (with local LLM): `docker compose -f docker-compose.plus.yml up -d`
 
+#### Mobile (iOS/Android)
 1. Install from App Store / Play Store
-2. Open XenoSys Desktop
-3. Go to **Network** → **Start Tunnel** → **Show QR Code**
-4. Open mobile app → **Scan QR Code**
+2. Connect to Desktop or VPS via WebSocket
 
-### VPS (Docker)
+### Step 2: Initial Settings Panel
+
+After installation, the Settings Panel wizard appears:
+
+1. **Basic Configuration**: Agent name, Instance ID
+2. **LLM Provider Selection**:
+   - **API Mode** (default): Enter API key for OpenAI/Anthropic/Google
+   - **Local Mode**: Will install Ollama on-demand (~1.8GB)
+3. **Integrations**: Telegram, Discord, MCP Tools
+4. **Security**: Encryption, read-only mode
+
+### Step 3: On-Demand Modules (Optional)
+
+If you selected Local LLM mode, the on-demand module installer will:
+1. Download and install Ollama
+2. Download the selected model
+3. Verify installation
+
+### Post-Setup: Connect Mobile
+
+After Desktop is running:
+1. Go to **Network** → **Start Tunnel** → **Show QR Code**
+2. Open mobile app → **Scan QR Code**
 
 ```bash
 # Clone and run

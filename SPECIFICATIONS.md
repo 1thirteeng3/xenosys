@@ -48,38 +48,133 @@
 
 ## 2. Installation Variants
 
-### 2.1 Desktop (Linux, Windows, Mac)
+### 2.1 Installation Flow Overview
 
-| Variant | Size | Use Case |
-|---------|------|----------|
-| **Desktop Light** | ~200MB | Gateway + settings panel only, connects to cloud APIs |
-| **Desktop Full** | ~2GB | Adds local LLM (Ollama) for offline inference |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     XenoSys Installation                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────┐    ┌──────────────────┐    ┌───────────────────┐  │
+│  │   Step 1   │───▶│     Step 2       │───▶│     Step 3        │  │
+│  │ Platform   │    │  Initial Setup   │    │  On-Demand        │  │
+│  │ Selection │    │     Panel        │    │  Modules          │  │
+│  └─────────────┘    └──────────────────┘    └───────────────────┘  │
+│                                                                     │
+│  Platform:        Setup Panel:              On-Demand:            │
+│  • Desktop        • API Keys             • Local LLM           │
+│  • VPS            • Tools              • MCP Tools            │
+│  • Mobile         • Integrations      • Extra Features        │
+│                   • LLM Selection                         │
+│                   (API vs Local)                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Step 1: Platform Selection
+
+#### 2.2.1 Desktop (Linux, Windows, Mac)
+
+| Version | Included | Optional Add-on |
+|---------|----------|------------------|
+| **Desktop Standard** | All modules and features except local LLM | Local LLM package |
+| **Desktop Plus** | All modules including local LLM (Ollama) | None |
+
+| Version | Size | Description |
+|---------|------|-------------|
+| **Desktop Standard** | ~200MB | Full-featured app without local LLM packages |
+| **Desktop Plus** | ~2GB | Standard + Ollama for offline inference |
 
 **Installation Target:** User downloads platform-specific installer
 - Linux: `.deb`, `.AppImage`
 - Windows: `.exe` installer
 - Mac: `.dmg` or `.app`
 
-### 2.2 VPS/Server
+#### 2.2.2 VPS/Server (Docker)
 
-| Variant | Docker Size | Services |
+| Version | Included | Optional Add-on |
+|---------|----------|------------------|
+| **VPS Standard** | All modules and features except local LLM | Local LLM (Ollama) |
+| **VPS Plus** | All modules including local LLM (Ollama) | None |
+
+| Version | Docker Size | Services |
 |---------|-----------|----------|
-| **VPS Light** | ~300MB | Gateway + Redis only |
-| **VPS Standard** | ~800MB | + Core + Cortex |
-| **VPS Full** | ~2GB | + OpenViking + All features |
+| **VPS Standard** | ~800MB | Gateway + Core + Cortex + OpenViking + MCP |
+| **VPS Plus** | ~2GB | Standard + Ollama |
 
-**Installation:** `docker compose up` with configurable services
+**Installation:** `docker compose up` with configurable profiles
 
-### 2.3 Mobile (Android, iOS)
+#### 2.2.3 Mobile (Android, iOS)
 
-| Variant | Size | Notes |
-|--------|------|-------|
-| **Mobile Light** | ~50MB | Connects to remote VPS via WebSocket |
-| **Mobile Full** | ~150MB | Local inference via WebLLM |
+Mobile versions connect remotely to Desktop or VPS instances.
+
+| Platform | Size | Connection |
+|----------|------|-------------|
+| **Android** | ~50MB | WebSocket to Desktop/VPS |
+| **iOS** | ~50MB | WebSocket to Desktop/VPS |
 
 **Distribution:** App Store / Play Store
 
-### 2.4 Modular Service Architecture
+### 2.3 Step 2: Initial Settings Panel (First-Run Wizard)
+
+After installing the application, all platforms present an initial settings panel:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    XenoSys Setup                           │
+├─────────────────────────────────────────────────────────────┤
+│   Step 1: Basic Configuration                               │
+│   ─────────────────────────────────                         │
+│   □ Agent Name: [________________]                          │
+│                                                             │
+│   Step 2: LLM Provider Selection                            │
+│   ─────────────────────────────────                         │
+│   ○ Use API LLM (default)                                  │
+│     • OpenAI API Key                                       │
+│     • Anthropic API Key                                    │
+│     • Google API Key                                        │
+│   ○ Use Local LLM (will install on-demand)                   │
+│     • Ollama (Desktop/VPS)                                  │
+│     • WebLLM (Mobile)                                      │
+│                                                             │
+│   Step 3: Integrations                                     │
+│   ─────────────────────────────────                         │
+│   □ Telegram Bot Token                                      │
+│   □ Discord Webhook                                         │
+│   □ MCP Tools Enabled                                       │
+│                                                             │
+│   Step 4: Security                                         │
+│   ─────────────────────────────────                         │
+│   □ Encryption: AES-256-GCM                               │
+│   ○ Read-only mode (no tool execution)                      │
+│                                                             │
+│                      [Continue] →                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Decision:** User selects between API mode or Local mode.
+- **API Mode**: Uses cloud APIs (OpenAI, Anthropic, Google) - no additional packages
+- **Local Mode**: Installs Ollama/WebLLM on-demand for offline inference
+
+### 2.4 Step 3: On-Demand Module Installation
+
+When user selects "Local LLM" in the settings panel:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Installing Modules...                      │
+├─────────────────────────────────────────────────────────────┤
+│   Installing Ollama...        [████████░░] 80%               │
+│   Downloading model...       [██████████] 100%              │
+│   Verifying installation... [██████████] Done               │
+│                                                             │
+│   ✓ Local LLM module installed successfully                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+This keeps the base installation lightweight (~200MB) while allowing users to add local LLM capability when needed.
+
+### 2.5 Modular Service Architecture
 
 ```
                     ┌─────────────────────────────────────┐
@@ -217,14 +312,15 @@ Settings stored in:
 
 ### 4.3 Docker Service Matrix
 
-| Service | Light | Standard | Full |
-|---------|-------|----------|------|
-| gateway | ✅ | ✅ | ✅ |
-| core | ❌ | ✅ | ✅ |
-| cortex | ❌ | ✅ | ✅ |
-| openviking | ❌ | ❌ | ✅ |
-| redis | ✅ | ✅ | ✅ |
-| mcp-memory | ❌ | ❌ | ✅ |
+| Service | Standard | Plus | Notes |
+|---------|----------|------|-------|
+| gateway | ✅ | ✅ | Always included |
+| core | ✅ | ✅ | Agent orchestration |
+| cortex | ✅ | ✅ | Semantic memory |
+| openviking | ✅ | ✅ | Episodic memory |
+| redis | ✅ | ✅ | Message broker |
+| mcp-memory | ✅ | ✅ | Contextual memory |
+| ollama | ❌ | ✅ | Local LLM (on-demand) |
 
 ---
 
