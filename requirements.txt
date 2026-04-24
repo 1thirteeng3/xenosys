@@ -1,0 +1,3 @@
+# Docker SDK for Python
+# Used for Docker API interactions without subprocess calls
+docker>=7.0.0
