@@ -1,0 +1,396 @@
+"""
+XenoSys Memory System - L1 Semantic Memory
+Built on Cortex for semantic search and knowledge graphs.
+
+Cortex: https://github.com/abbacusgroup/cortex
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
+
+import httpx
+
+from ...resilience.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    CircuitBreakerError,
+    get_breaker_registry,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Semantic Memory Types
+# ============================================================================
+
+@dataclass
+class SemanticEntry:
+    """A semantic memory entry with embedding."""
+    id: UUID = field(default_factory=uuid4)
+    content: str = ""
+    embedding: Optional[List[float]] = None
+    agent_id: Optional[str] = None
+    entity_id: Optional[str] = None
+    importance: float = 0.5
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    accessed_at: Optional[datetime] = None
+    access_count: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SemanticSearchResult:
+    """Result from semantic search."""
+    entry: SemanticEntry
+    score: float  # Similarity score
+
+
+# ============================================================================
+# Cortex Integration Interface - Real HTTP Client
+# ============================================================================
+
+class CortexClient:
+    """
+    Interface to Cortex for semantic memory operations via HTTP.
+    
+    Cortex provides:
+    - Vector embedding storage
+    - Semantic similarity search
+    - Knowledge graph operations
+    - Multi-modal memory support
+    
+    This client uses httpx for async HTTP communication.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.endpoint = self.config.get("endpoint", "http://localhost:8000")
+        self.api_key = self.config.get("api_key", "")
+        self.embedding_model = self.config.get("embedding_model", "sentence-transformers")
+        self.timeout = httpx.Timeout(self.config.get("timeout", 30.0))
+        self._client: Optional[httpx.AsyncClient] = None
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client."""
+        if self._client is None:
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            self._client = httpx.AsyncClient(
+                base_url=self.endpoint,
+                timeout=self.timeout,
+                headers=headers,
+            )
+        return self._client
+    
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+    
+    async def connect(self) -> bool:
+        """Connect to Cortex server - verify health."""
+        try:
+            client = await self._get_client()
+            response = await client.get("/health")
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Failed to connect to Cortex: {e}")
+            return False
+    
+    async def create_collection(self, name: str, dimension: int = 384) -> bool:
+        """Create a new collection for embeddings."""
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                "/collections",
+                json={"name": name, "dimension": dimension}
+            )
+            return response.status_code in (200, 201)
+        except Exception as e:
+            logger.error(f"Failed to create collection: {e}")
+            return False
+    
+    async def add_embedding(
+        self,
+        collection: str,
+        entry: SemanticEntry,
+    ) -> UUID:
+        """Add embedding to Cortex via HTTP."""
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                f"/collections/{collection}/embeddings",
+                json={
+                    "id": str(entry.id),
+                    "content": entry.content,
+                    "embedding": entry.embedding,
+                    "metadata": {
+                        "agent_id": entry.agent_id,
+                        "entity_id": entry.entity_id,
+                        "importance": entry.importance,
+                        **entry.metadata
+                    }
+                }
+            )
+            if response.status_code in (200, 201):
+                return entry.id
+            raise Exception(f"Failed to add embedding: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Failed to add embedding: {e}")
+            raise
+    
+    async def search(
+        self,
+        collection: str,
+        query: str,
+        top_k: int = 10,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[SemanticSearchResult]:
+        """Search for similar embeddings via HTTP with circuit breaker."""
+        # Get or create circuit breaker
+        registry = get_breaker_registry()
+        breaker = await registry.get_or_create(
+            "cortex_search",
+            fail_max=3,
+            timeout_duration=30.0,
+        )
+        
+        try:
+            # Use circuit breaker for the HTTP call
+            async def _do_search() -> List[SemanticSearchResult]:
+                client = await self._get_client()
+                
+                # First, embed the query
+                embed_response = await client.post(
+                    "/embed",
+                    json={"text": query, "model": self.embedding_model}
+                )
+                if embed_response.status_code != 200:
+                    return []
+                
+                query_embedding = embed_response.json().get("embedding", [])
+                
+                # Search
+                search_response = await client.post(
+                    f"/collections/{collection}/search",
+                    json={
+                        "embedding": query_embedding,
+                        "top_k": top_k,
+                        "filter": filter_dict
+                    }
+                )
+                
+                if search_response.status_code != 200:
+                    return []
+                
+                results = []
+                for item in search_response.json().get("results", []):
+                    entry = SemanticEntry(
+                        id=UUID(item["id"]),
+                        content=item.get("content", ""),
+                        embedding=item.get("embedding"),
+                        importance=item.get("metadata", {}).get("importance", 0.5)
+                    )
+                    results.append(SemanticSearchResult(entry=entry, score=item.get("score", 0.0)))
+                
+                return results
+            
+            return await breaker.call(_do_search)
+            
+        except CircuitBreakerOpenError:
+            # Fast fail: return empty list without touching network
+            logger.warning("Cortex circuit breaker open, fast failing search")
+            return []
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return []
+    
+    async def delete_entry(self, collection: str, entry_id: UUID) -> bool:
+        """Delete an entry."""
+        try:
+            client = await self._get_client()
+            response = await client.delete(f"/collections/{collection}/embeddings/{entry_id}")
+            return response.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Failed to delete entry: {e}")
+            return False
+    
+    async def get_entry(self, collection: str, entry_id: UUID) -> Optional[SemanticEntry]:
+        """Get a specific entry."""
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/collections/{collection}/embeddings/{entry_id}")
+            if response.status_code != 200:
+                return None
+            
+            item = response.json()
+            return SemanticEntry(
+                id=UUID(item["id"]),
+                content=item.get("content", ""),
+                embedding=item.get("embedding"),
+                importance=item.get("metadata", {}).get("importance", 0.5)
+            )
+        except Exception as e:
+            logger.error(f"Failed to get entry: {e}")
+            return None
+
+
+# ============================================================================
+# Semantic Memory Store
+# ============================================================================
+
+class SemanticMemoryStore:
+    """
+    L1 Semantic Memory using Cortex for storage and retrieval.
+    
+    Provides:
+    - Vector embedding storage
+    - Semantic similarity search
+    - Agent-specific memory namespaces
+    - Importance-based retention
+    """
+    
+    def __init__(
+        self,
+        cortex_client: Optional[CortexClient] = None,
+        default_collection: str = "xenosys_semantic",
+    ):
+        self.cortex = cortex_client or CortexClient()
+        self.default_collection = default_collection
+    
+    async def initialize(self) -> bool:
+        """Initialize the semantic memory store."""
+        connected = await self.cortex.connect()
+        if connected:
+            await self.cortex.create_collection(self.default_collection)
+        return connected
+    
+    async def close(self) -> None:
+        """Close the store."""
+        await self.cortex.close()
+    
+    async def store(
+        self,
+        content: str,
+        agent_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        importance: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> UUID:
+        """Store a semantic memory entry."""
+        entry = SemanticEntry(
+            content=content,
+            agent_id=agent_id,
+            entity_id=entity_id,
+            importance=importance,
+            metadata=metadata or {},
+        )
+        
+        # Generate embedding (placeholder - would use actual embedding model)
+        entry.embedding = await self._generate_embedding(content)
+        
+        # Store in Cortex via HTTP
+        await self.cortex.add_embedding(self.default_collection, entry)
+        
+        logger.info(f"Stored semantic entry: {entry.id}")
+        return entry.id
+    
+    async def retrieve(
+        self,
+        entry_id: UUID,
+    ) -> Optional[SemanticEntry]:
+        """Retrieve a specific semantic entry."""
+        return await self.cortex.get_entry(self.default_collection, entry_id)
+    
+    async def search(
+        self,
+        query: str,
+        agent_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        top_k: int = 10,
+    ) -> List[SemanticSearchResult]:
+        """Search semantic memory for relevant content."""
+        # Apply filters
+        filters = {}
+        if agent_id:
+            filters["agent_id"] = agent_id
+        if entity_id:
+            filters["entity_id"] = entity_id
+        
+        # Search Cortex via HTTP
+        results = await self.cortex.search(
+            collection=self.default_collection,
+            query=query,
+            top_k=top_k,
+            filter_dict=filters if filters else None,
+        )
+        
+        logger.info(f"Semantic search returned {len(results)} results")
+        return results
+    
+    async def get_agent_memories(
+        self,
+        agent_id: str,
+        limit: int = 100,
+    ) -> List[SemanticEntry]:
+        """Get all memories for a specific agent."""
+        results = await self.cortex.search(
+            collection=self.default_collection,
+            query="",
+            top_k=limit,
+            filter_dict={"agent_id": agent_id}
+        )
+        return [r.entry for r in results]
+    
+    async def delete(
+        self,
+        entry_id: UUID,
+    ) -> bool:
+        """Delete a semantic entry."""
+        return await self.cortex.delete_entry(self.default_collection, entry_id)
+    
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get memory statistics."""
+        return {
+            "collection": self.default_collection,
+            "endpoint": self.cortex.endpoint,
+        }
+    
+    async def _generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding for text via HTTP."""
+        try:
+            client = await self.cortex._get_client()
+            response = await client.post(
+                "/embed",
+                json={"text": text, "model": self.cortex.embedding_model}
+            )
+            if response.status_code == 200:
+                return response.json().get("embedding", [])
+        except Exception as e:
+            logger.warning(f"Failed to generate embedding: {e}")
+        
+        # Fallback: deterministic mock embedding
+        import hashlib
+        h = hashlib.sha256(text.encode()).digest()
+        return [float(b) / 255.0 for b in h[:384]]
+
+
+# Global semantic store instance
+_global_semantic_store: Optional[SemanticMemoryStore] = None
+
+
+def get_semantic_store(config: Optional[Dict[str, Any]] = None) -> SemanticMemoryStore:
+    """Get or create global semantic store."""
+    global _global_semantic_store
+    if _global_semantic_store is None:
+        _global_semantic_store = SemanticMemoryStore(
+            cortex_client=CortexClient(config) if config else None
+        )
+    return _global_semantic_store

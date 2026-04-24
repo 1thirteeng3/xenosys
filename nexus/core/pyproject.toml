@@ -1,0 +1,40 @@
+[project]
+name = "xenosys-core"
+version = "1.0.0"
+description = "XenoSys Core - Multi-agent cognitive engine"
+requires-python = ">=3.11"
+dependencies = [
+    "dspy>=0.1.5",
+    "pydantic>=2.0.0",
+    "httpx>=0.25.0",
+    "redis>=5.0.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "protobuf>=4.25.0",
+    "sentence-transformers>=2.2.2",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+    "mcp>=0.1.0",
+    "tenacity>=8.2.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# -----------------------------------------------------------------------------
+# HOTFIX ARQUITETURAL: Mapeamento Explícito de Módulos
+# Resolve o erro do Hatchling avisando exatamente quais pastas empacotar,
+# já que não possuímos um diretório central 'src/' ou 'xenosys_core/'.
+# -----------------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = [
+    "agents",
+    "entities",
+    "learning",
+    "llmops",
+    "memory",
+    "messaging",
+    "orchestration",
+    "resilience"
+]

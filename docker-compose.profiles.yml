@@ -1,0 +1,79 @@
+# =============================================================================
+# XenoSys Docker Compose - Profiles Configuration
+# =============================================================================
+# This file contains optional profiles for different installation versions.
+# Usage:
+#   - Standard (default): docker compose up -f docker-compose.yml -f docker-compose.profiles.yml --profile standard
+#   - Plus (with local LLM): docker compose up -f docker-compose.yml -f docker-compose.profiles.yml --profile plus
+# =============================================================================
+
+# -------------------------------------------------------------------------
+# Profile: standard
+# - Gateway + Core + Redis + Cortex + OpenViking + MCP Memory
+# - No local LLM (uses API mode by default)
+# -------------------------------------------------------------------------
+xenosys-standard:
+  name: xenosys-standard
+  # Standard profile includes basic services (no local LLM)
+  # All core services are included by default in docker-compose.yml
+  # This profile is implied when no --profile is specified
+
+# -------------------------------------------------------------------------
+# Profile: plus
+# - All Standard services + Local LLM (Ollama)
+# - Enables offline inference capability
+# -------------------------------------------------------------------------
+xenosys-plus:
+  name: xenosys-plus
+  # Plus profile adds Ollama for local LLM inference
+
+services:
+  # -------------------------------------------------------------------------
+  # Ollama Service (Local LLM for Plus version)
+  # -------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: xenosys-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    profiles:
+      - plus
+    # GPU support (optional - will use CPU if no GPU available)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+# -------------------------------------------------------------------------
+# Update Core service for Plus profile to use Ollama
+# -------------------------------------------------------------------------
+  # When using Plus profile, the core service will use OLLAMA_URL environment variable
+
+# Update Gateway service for Plus profile
+  # gateway:
+  #   environment:
+  #     - OLLAMA_HOST=xenosys-ollama:11434  # Uncomment for Plus profile
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  xenosys-network:
+    external: true
+
+# =============================================================================
+# Volumes (add Ollama data volume)
+# =============================================================================
+volumes:
+  ollama-data:
+    name: xenosys-ollama-data

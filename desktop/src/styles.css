@@ -1,0 +1,149 @@
+/**
+ * XenoSys - Global Styles
+ * Cyber-Minimalist Design System
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base styles */
+@layer base {
+  html {
+    @apply bg-xeno-bg text-xeno-accent-active font-sans;
+  }
+  
+  body {
+    @apply min-h-screen antialiased;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-xeno-surface;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-xeno-border rounded;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-xeno-accent-cloud/50;
+  }
+}
+
+/* Component styles */
+@layer components {
+  /* Cyber Badge - Status indicator with glow */
+  .cyber-badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply transition-all duration-200;
+  }
+  
+  .cyber-badge.active {
+    @apply bg-xeno-accent-active/20 text-xeno-accent-active;
+    @apply shadow-glow-active;
+  }
+  
+  .cyber-badge.alert {
+    @apply bg-xeno-accent-alert/20 text-xeno-accent-alert;
+    @apply shadow-glow-alert;
+  }
+  
+  .cyber-badge.error {
+    @apply bg-xeno-accent-error/20 text-xeno-accent-error;
+    @apply shadow-glow-error;
+  }
+  
+  .cyber-badge.cloud {
+    @apply bg-xeno-accent-cloud/20 text-xeno-accent-cloud;
+    @apply shadow-glow-cloud;
+  }
+  
+  /* Thought Block - Processing indicator */
+  .thought-block {
+    @apply border border-xeno-border rounded-lg overflow-hidden;
+  }
+  
+  .thought-block-processing {
+    @apply flex items-center gap-2 p-3 bg-xeno-surface;
+  }
+  
+  .thought-block-log {
+    @apply p-3 bg-[#050505] font-mono text-xs overflow-x-auto;
+  }
+  
+  /* MCP Widget Container */
+  .mcp-widget {
+    @apply border border-xeno-border rounded-lg bg-xeno-surface;
+  }
+  
+  /* Connection Status Indicator */
+  .connection-indicator {
+    @apply flex items-center gap-2 px-3 py-1.5 rounded-full text-sm;
+  }
+  
+  .connection-indicator.connected {
+    @apply bg-xeno-accent-active/20 text-xeno-accent-active;
+  }
+  
+  .connection-indicator.disconnected {
+    @apply bg-xeno-accent-error/20 text-xeno-accent-error;
+  }
+  
+  .connection-indicator.connecting {
+    @apply bg-xeno-accent-cloud/20 text-xeno-accent-cloud animate-pulse;
+  }
+
+  /* Button variants */
+  .btn-primary {
+    @apply px-4 py-2 bg-xeno-accent-active text-xeno-bg font-bold rounded;
+    @apply hover:bg-xeno-accent-active/90 transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 border border-xeno-accent-active text-xeno-accent-active rounded;
+    @apply hover:bg-xeno-accent-active/10 transition-colors;
+  }
+  
+  .btn-danger {
+    @apply px-4 py-2 bg-xeno-accent-error text-white font-bold rounded;
+    @apply hover:bg-xeno-accent-error/90 transition-colors;
+  }
+  
+  /* Card/Panel styles */
+  .panel {
+    @apply bg-xeno-surface border border-xeno-border rounded-lg;
+  }
+  
+  /* Input styles */
+  .input-field {
+    @apply w-full px-4 py-2 bg-xeno-bg border border-xeno-border rounded;
+    @apply text-xeno-accent-active placeholder-xeno-border;
+    @apply focus:outline-none focus:border-xeno-accent-active focus:ring-1 focus:ring-xeno-accent-active;
+  }
+}
+
+/* Utility classes */
+@layer utilities {
+  .text-glow-active {
+    text-shadow: 0 0 10px rgba(0, 255, 157, 0.5);
+  }
+  
+  .text-glow-cloud {
+    text-shadow: 0 0 10px rgba(0, 184, 255, 0.5);
+  }
+  
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

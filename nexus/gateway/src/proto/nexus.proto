@@ -1,0 +1,295 @@
+// XenoSys gRPC Protocol Definition
+// TypeScript ↔ Python interop
+
+syntax = "proto3";
+
+package nexus;
+
+// ============================================================================
+// Agent Execution
+// ============================================================================
+
+message AgentRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string channel = 3;
+  string message = 4;
+  repeated string attachments = 5;
+  RequestContext context = 6;
+  RequestOptions options = 7;
+}
+
+message RequestContext {
+  string agent_id = 1;
+  string entity_id = 2;
+  string memory_filters = 3;  // JSON
+  string system_prompt = 4;
+}
+
+message RequestOptions {
+  int32 max_iterations = 1;
+  int64 timeout_ms = 2;
+  double temperature = 3;
+  string model = 4;
+}
+
+message AgentResponse {
+  string session_id = 1;
+  string message_id = 2;
+  string content = 3;
+  bool done = 4;
+  ResponseMetadata metadata = 5;
+  repeated ToolCall tool_calls = 6;
+  string error = 7;
+}
+
+message ResponseMetadata {
+  string model = 1;
+  int32 tokens_in = 2;
+  int32 tokens_out = 3;
+  double cost_usd = 4;
+  int64 latency_ms = 5;
+  int32 iterations = 6;
+}
+
+message ToolCall {
+  string name = 1;
+  string args = 2;  // JSON
+  string result = 3;
+  string error = 4;
+}
+
+// ============================================================================
+// Runtime Service
+// ============================================================================
+
+service Runtime {
+  // Execute agent and wait for completion
+  rpc ExecuteAgent(AgentRequest) returns (AgentResponse);
+
+  // Execute agent with streaming response
+  rpc StreamAgent(AgentRequest) returns (stream AgentResponse);
+
+  // Health check
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+
+  // Get available tools
+  rpc ListTools(ToolsRequest) returns (ToolsResponse);
+
+  // Execute a single tool
+  rpc ExecuteTool(ToolRequest) returns (ToolResponse);
+}
+
+// ============================================================================
+// Status
+// ============================================================================
+
+message StatusRequest {
+  string node_id = 1;
+}
+
+message StatusResponse {
+  string status = 1;  // "healthy", "degraded", "down"
+  string version = 2;
+  map<string, string> capabilities = 3;
+}
+
+// ============================================================================
+// Tool Management
+// ============================================================================
+
+message ToolsRequest {
+  string agent_id = 1;
+  repeated string toolset = 2;
+}
+
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  map<string, ToolParameter> parameters = 3;
+  bool requires_approval = 4;
+}
+
+message ToolParameter {
+  string type = 1;
+  string description = 2;
+  bool required = 3;
+  string default = 4;
+}
+
+message ToolsResponse {
+  repeated ToolDefinition tools = 1;
+}
+
+// ============================================================================
+// Tool Execution
+// ============================================================================
+
+message ToolRequest {
+  string tool_name = 1;
+  string args = 2;  // JSON
+  string session_id = 3;
+  string user_id = 4;
+}
+
+message ToolResponse {
+  string result = 1;
+  string error = 2;
+  int64 execution_time_ms = 3;
+}
+
+// ============================================================================
+// Memory Operations
+// ============================================================================
+
+service Memory {
+  // Search semantic memory
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Read from long-term memory
+  rpc Read(ReadRequest) returns (ReadResponse);
+
+  // Write to long-term memory
+  rpc Write(WriteRequest) returns (WriteResponse);
+
+  // Query episodic memory
+  rpc QueryEpisodes(EpisodeQuery) returns (EpisodeQueryResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  string namespace = 2;
+  int32 limit = 3;
+  map<string, string> filters = 4;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string id = 1;
+  string content = 2;
+  double score = 3;
+  map<string, string> metadata = 4;
+}
+
+message ReadRequest {
+  string namespace = 1;
+  string path = 2;
+}
+
+message ReadResponse {
+  bytes content = 1;
+  map<string, string> metadata = 2;
+}
+
+message WriteRequest {
+  string namespace = 1;
+  string path = 2;
+  bytes content = 3;
+  map<string, string> metadata = 4;
+}
+
+message WriteResponse {
+  bool success = 1;
+  string version = 2;
+}
+
+message EpisodeQuery {
+  string session_id = 1;
+  string user_id = 2;
+  int64 start_time = 3;
+  int64 end_time = 4;
+  int32 limit = 5;
+}
+
+message EpisodeQueryResponse {
+  repeated Episode episodes = 1;
+}
+
+message Episode {
+  string id = 1;
+  string session_id = 2;
+  string user_id = 3;
+  repeated Message messages = 4;
+  int64 timestamp = 5;
+  map<string, string> metadata = 6;
+}
+
+message Message {
+  string role = 1;
+  string content = 2;
+  repeated ToolCall tool_calls = 3;
+  int64 timestamp = 4;
+}
+
+// ============================================================================
+// Learning Engine
+// ============================================================================
+
+service Learning {
+  // Get available LoRA adapters
+  rpc ListAdapters(ListAdaptersRequest) returns (ListAdaptersResponse);
+
+  // Switch active LoRA adapter
+  rpc SwitchAdapter(SwitchAdapterRequest) returns (SwitchAdapterResponse);
+
+  // Trigger STaR self-improvement
+  rpc RunStar(StarRequest) returns (StarResponse);
+
+  // Get training status
+  rpc GetTrainingStatus(TrainingStatusRequest) returns (TrainingStatusResponse);
+}
+
+message ListAdaptersRequest {
+  string agent_id = 1;
+}
+
+message ListAdaptersResponse {
+  repeated AdapterInfo adapters = 1;
+}
+
+message AdapterInfo {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool active = 4;
+  int64 size_bytes = 5;
+  string trained_at = 6;
+}
+
+message SwitchAdapterRequest {
+  string agent_id = 1;
+  string adapter_id = 2;
+}
+
+message SwitchAdapterResponse {
+  bool success = 1;
+  string previous_adapter = 2;
+  string new_adapter = 3;
+}
+
+message StarRequest {
+  string agent_id = 1;
+  string session_id = 2;
+  repeated string target_skills = 3;
+}
+
+message StarResponse {
+  bool success = 1;
+  int32 iterations_performed = 2;
+  string improved_skill = 3;
+  map<string, string> metrics = 4;
+}
+
+message TrainingStatusRequest {
+  string job_id = 1;
+}
+
+message TrainingStatusResponse {
+  string status = 1;  // "queued", "running", "completed", "failed"
+  float progress = 2;
+  string eta = 3;
+  map<string, string> metrics = 4;
+}

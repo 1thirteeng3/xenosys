@@ -1,0 +1,181 @@
+# =============================================================================
+# XenoSys Docker Compose - VPS Plus Version
+# =============================================================================
+# This is the PLUS version - all features INCLUDING local LLM (Ollama)
+# Usage: docker compose -f docker-compose.plus.yml up -d
+# =============================================================================
+
+services:
+  # -------------------------------------------------------------------------
+  # 1. Gateway Service (Node.js)
+  # -------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./nexus/gateway
+    container_name: xenosys-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - REDIS_HOST=xenosys-redis
+      - GRPC_ENDPOINT=xenosys-core:50051
+      # Use local LLM mode (with fallback to API)
+      - LLM_MODE=local
+      - OLLAMA_HOST=http://xenosys-ollama:11434
+    depends_on:
+      - core
+      - redis
+      - ollama
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 2. Core Service (Python)
+  # -------------------------------------------------------------------------
+  core:
+    build:
+      context: ./nexus/core
+    container_name: xenosys-core
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GRPC_HOST=0.0.0.0
+      - GRPC_PORT=50051
+      - REDIS_HOST=xenosys-redis
+      - LLM_MODE=local
+      # Local LLM (Ollama) configuration
+      - OLLAMA_BASE_URL=http://xenosys-ollama:11434
+      # Internal service URLs
+      - CORTEX_URL=http://xenosys-cortex:8000
+      - OPENVIKING_URL=http://xenosys-openviking:8080
+      - MCP_MEMORY_URL=http://xenosys-mcp-memory:9000
+      - OBSIDIAN_VAULT_PATH=/app/obsidian_vault
+      # API Keys (optional fallback when local LLM unavailable)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    ports:
+      - "50051:50051"
+    depends_on:
+      - cortex
+      - openviking
+      - redis
+      - mcp-memory
+      - ollama
+    volumes:
+      - obsidian-vault:/app/obsidian_vault
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 3. Redis (Message Broker & Cache)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: xenosys-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 4. OpenViking (Episodic Memory - Volcengine)
+  # -------------------------------------------------------------------------
+  openviking:
+    build: https://github.com/volcengine/OpenViking.git#main
+    container_name: xenosys-openviking
+    ports:
+      - "8081:8080"
+    volumes:
+      - openviking-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 5. Cortex (Semantic Memory - Abbacus)
+  # -------------------------------------------------------------------------
+  cortex:
+    build: https://github.com/abbacusgroup/cortex.git#main
+    container_name: xenosys-cortex
+    ports:
+      - "8000:8000"
+    volumes:
+      - cortex-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 6. MCP Memory Server (L4 Contextual Memory)
+  # -------------------------------------------------------------------------
+  mcp-memory:
+    image: node:20-alpine
+    container_name: xenosys-mcp-memory
+    ports:
+      - "9000:9000"
+    environment:
+      - PORT=9000
+    command: sh -c "npx -y supergateway --port 9000 --ssePath /sse --messagePath /message --stdio \"npx -y @modelcontextprotocol/server-memory\""
+    volumes:
+      - xenosys-l4-data:/app/memory_data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 7. Ollama Service (Local LLM - PLUS feature)
+  # -------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: xenosys-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_MODELS=/root/.ollama/models
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+    # GPU support - uncomment if you have GPU available
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  xenosys-network:
+    driver: bridge
+    name: xenosys-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    name: xenosys-redis-data
+  cortex-data:
+    name: xenosys-cortex-data
+  openviking-data:
+    name: xenosys-openviking-data
+  obsidian-vault:
+    name: xenosys-obsidian-vault
+  xenosys-l4-data:
+    name: xenosys-l4-data
+  ollama-data:
+    name: xenosys-ollama-data

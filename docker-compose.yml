@@ -1,0 +1,153 @@
+# =============================================================================
+# XenoSys Docker Compose Configuration
+# =============================================================================
+# Choose your version:
+#   - STANDARD (no local LLM): docker compose -f docker-compose.yml up -d
+#   - PLUS (with local LLM):  docker compose -f docker-compose.standard.yml up -d
+#                           or docker compose -f docker-compose.plus.yml up -d
+# 
+# For more details, see docker-compose.standard.yml and docker-compose.plus.yml
+# =============================================================================
+
+# This file is the default. Use docker-compose.standard.yml or docker-compose.plus.yml
+# for specific versions. See SPECIFICATIONS.md for more information.
+
+services:
+  # -------------------------------------------------------------------------
+  # 1. Gateway Service (Node.js)
+  # -------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./nexus/gateway
+    container_name: xenosys-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - REDIS_HOST=xenosys-redis
+      - GRPC_ENDPOINT=xenosys-core:50051
+    depends_on:
+      - core
+      - redis
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 2. Core Service (Python)
+  # -------------------------------------------------------------------------
+  core:
+    build:
+      context: ./nexus/core
+    container_name: xenosys-core
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GRPC_HOST=0.0.0.0
+      - GRPC_PORT=50051
+      - REDIS_HOST=xenosys-redis
+      # URLs para resolução interna via Docker DNS
+      - CORTEX_URL=http://xenosys-cortex:8000
+      - OPENVIKING_URL=http://xenosys-openviking:8080
+      - MCP_MEMORY_URL=http://xenosys-mcp-memory:9000
+      - OBSIDIAN_VAULT_PATH=/app/obsidian_vault
+      # Chaves de API (carregadas via .env ou shell)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    ports:
+      - "50051:50051"
+    depends_on:
+      - cortex
+      - openviking
+      - redis
+      - mcp-memory
+    volumes:
+      - obsidian-vault:/app/obsidian_vault
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 3. Redis (Message Broker & Cache)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: xenosys-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 4. OpenViking (Memória Episódica da Volcengine)
+  # -------------------------------------------------------------------------
+  openviking:
+    build: https://github.com/volcengine/OpenViking.git#main
+    container_name: xenosys-openviking
+    ports:
+      - "8081:8080"
+    volumes:
+      - openviking-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 5. Cortex (Memória Semântica da Abbacus Group)
+  # -------------------------------------------------------------------------
+  cortex:
+    build: https://github.com/abbacusgroup/cortex.git#main
+    container_name: xenosys-cortex
+    ports:
+      - "8000:8000"
+    volumes:
+      - cortex-data:/data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+  # -------------------------------------------------------------------------
+  # 6. BrainSys (Graph-based Contextual Memory / L4)
+  # -------------------------------------------------------------------------
+  mcp-memory:
+    image: node:20-alpine
+    container_name: xenosys-mcp-memory
+    ports:
+      - "9000:9000"
+    environment:
+      - PORT=9000
+    command: sh -c "npx -y supergateway --port 9000 --ssePath /sse --messagePath /message --stdio \"npx -y @modelcontextprotocol/server-memory\""
+    volumes:
+      - xenosys-l4-data:/app/memory_data
+    restart: unless-stopped
+    networks:
+      - xenosys-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  xenosys-network:
+    driver: bridge
+    name: xenosys-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    name: xenosys-redis-data
+  cortex-data:
+    name: xenosys-cortex-data
+  openviking-data:
+    name: xenosys-openviking-data
+  obsidian-vault:
+    name: xenosys-obsidian-vault
+  xenosys-l4-data:
+    name: xenosys-l4-data
