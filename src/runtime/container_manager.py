@@ -630,6 +630,51 @@ class ContainerManager:
             return session.container_id
     
     # =========================================================================
+    # SEGURANÇA - SANITIZAÇÃO DE CÓDIGO
+    # =========================================================================
+    
+    def _sanitize_code(self, code: str) -> bool:
+        """
+        Valida código antes de executar no container.
+        
+        Bloqueia operações perigosas que podem comprometer
+        o ambiente isolado.
+        
+        Args:
+            code: Código Python a validar
+            
+        Returns:
+            True se código é seguro, False se contém operações perigosas
+        """
+        dangerous_patterns = [
+            "import os",
+            "import subprocess",
+            "import sys",
+            "import multiprocessing",
+            "import threading",
+            "open(",
+            "__import__",
+            "eval(",
+            "exec(",
+            "compile(",
+            "license",
+            "eval(",
+            "open(",
+            "file(",
+            ".communicate(",
+            "subprocess.Popen",
+            "os.system",
+            "os.popen",
+            "os.spawn",
+            "os.execl",
+            "pty.spawn",
+            "pty.fork",
+        ]
+        
+        code_lower = code.lower()
+        return not any(pattern.lower() in code_lower for pattern in dangerous_patterns)
+    
+    # =========================================================================
     # EXECUÇÃO DE CÓDIGO
     # =========================================================================
     
@@ -662,6 +707,13 @@ class ContainerManager:
             session = self._sessions.get(container_id)
             if not session:
                 raise ExecutionError(f"Container não encontrado: {container_id}")
+        
+        # Valida código é seguro
+        if not self._sanitize_code(code):
+            raise ExecutionError(
+                "Código enthält operações perigosas não permitidas. "
+                "Imports como os, subprocess, sys são bloqlados."
+            )
         
         client = self._get_docker_client()
         
