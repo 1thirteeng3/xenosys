@@ -1132,7 +1132,7 @@ def main():
         # Teste rápido
         print("=== Teste ContainerManager ===")
         
-        manager = ContainerManagerSync(pool_size=2)
+        manager = ContainerManagerSync(pool_size=3)
         
         print("1. Inicializando...")
         manager.initialize()
