@@ -328,7 +328,8 @@ class ContainerManager:
         
         try:
             # Puxa imagem com timeout
-            loop = asyncio.get_event_loop()
+            # Usa get_running_loop() ao invés do deprecated get_event_loop()
+            loop = asyncio.get_running_loop()
             
             # Executa pull em thread pool
             def pull():
@@ -537,7 +538,7 @@ class ContainerManager:
         logger.info(f"Preenchendo warm pool (N={self._pool_size})...")
         
         # Executa criação em background
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         for i in range(self._pool_size):
             try:
