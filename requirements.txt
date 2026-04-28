@@ -1,3 +1,10 @@
 # Docker SDK for Python
 # Used for Docker API interactions without subprocess calls
 docker>=7.0.0
+
+# Q3: RLM Inference Engine Dependencies
+# Environment variables management
+python-dotenv>=1.0.0
+
+# Async HTTP client for LLM API calls
+aiohttp>=3.9.0
