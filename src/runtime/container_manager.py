@@ -702,11 +702,12 @@ print("<<<XENOSYS_END>>>")
 '''
             
             # Cria processo exec no container
+            # stdin=True permite input interativo
             exec_id = client.exec_create(
                 container_id,
                 ["python3", "-c", exec_script],
                 tty=True,
-                stdin=False
+                stdin=True
             )
             
             # Executa
