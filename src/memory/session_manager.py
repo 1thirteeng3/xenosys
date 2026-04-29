@@ -431,25 +431,22 @@ class SessionManager:
         if not state.history:
             return False
         
-        # --- CORREÇÃO 1: Middle-Out Truncation ---
+        # --- CORREÇÃO: Middle-Out Truncation com slicing O(1) ---
         total = len(state.history)
-        pinned_head = max(1, total // 10)  # Primeiro 10% - PINNED (System + Goals)
-        pinned_tail = max(1, total // 5)   # Último 20% - PINNED (contexto recente)
-        pinned_middle = pinned_head + pinned_tail
+        pinned_head = max(1, total // 10)  # Primeiro 10% - PINNED
+        pinned_tail = max(1, total // 5)   # Último 20% - PINNED
         
-        pinned_indices = set(range(pinned_head)) | set(range(total - pinned_tail, total))
+        head = state.history[:pinned_head]
+        tail = state.history[-pinned_tail:]
+        state.history = head + tail
         
-        # Criar novo histórico: apenas entradas pinneadas e intermediárias
-        new_history = [state.history[i] for i in range(total) if i in pinned_indices]
-        
-        state.history = new_history
         state.context["_compressed"] = True
         state.context["_compression_method"] = "middle-out"
-        state.context["_history_truncated"] = len(new_history)
+        state.context["_history_truncated"] = len(state.history)
         state.context["_token_method"] = token_method
         
         logger.info(
-            f"Contexto comprimido: {total}→{len(new_history)} entradas "
+            f"Contexto comprimido: {total}→{len(state.history)} entradas "
             f"(pinned head={pinned_head}, tail={pinned_tail}, method={token_method})"
         )
         return True
@@ -586,16 +583,13 @@ class SessionManager:
         if not sid or sid not in self._sessions:
             return
         
-        # Obter lock da sessão (cria se não existir)
-        session_lock = self._session_locks.get(sid)
-        if session_lock is None:
-            session_lock = asyncio.Lock()
-            self._session_locks[sid] = session_lock
+        # Obter lock da sessão (atomic com setdefault)
+        session_lock = self._session_locks.setdefault(sid, asyncio.Lock())
         
         async with session_lock:
             state = self._sessions[sid]
             
-            # --- CORREÇÃO 1: Projeção de estado futuro ---
+            # --- CORREÇÃO 1: Projeção COMPLETA (history + context + entry) ---
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "action": action,
@@ -604,13 +598,22 @@ class SessionManager:
             
             # Estimar tokens da nova entrada
             new_entry_tokens = self._estimate_tokens(str(entry))
-            current_tokens = self._estimate_tokens(str(state.context))
+            
+            # CORREÇÃO: history + context (não só context!)
+            history_str = " ".join(str(h) for h in state.history)
+            history_tokens = self._estimate_tokens(history_str)
+            context_tokens = self._estimate_tokens(str(state.context))
+            current_tokens = history_tokens + context_tokens
+            
+            # Resetar flag de compressão (era True permanentemente)
+            state.context.pop("_compressed", None)
             
             # PROJEÇÃO: se exceder 80%, comprimir ANTES de inserir
             if (current_tokens + new_entry_tokens) > (self.token_limit * self.compress_threshold):
                 logger.info(
-                    f"Compressão proativa disparada: "
-                    f"{current_tokens}+{new_entry_tokens} > {self.token_limit * 0.8}"
+                    f"Compressão proativa: "
+                    f"history={history_tokens} + context={context_tokens} + "
+                    f"new={new_entry_tokens} > {self.token_limit * 0.8}"
                 )
                 await self._compress_context_internal(state)
             

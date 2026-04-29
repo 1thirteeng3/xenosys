@@ -225,8 +225,8 @@ async def test_context_compression():
 
 
 async def test_proactive_compression_trigger():
-    """Teste 7: Trigger Dinâmico de Compressão"""
-    print("\n=== Teste 7: Proactive Compression Trigger ===")
+    """Teste 7: Trigger Dinâmico de Compressão (HISTORY Based)"""
+    print("\n=== Teste 7: Proactive Compression Trigger (HISTORY) ===")
     
     with tempfile.TemporaryDirectory() as tmpdir:
         # Tokenizer que retorna tokens diretamente do tamanho
@@ -242,13 +242,17 @@ async def test_proactive_compression_trigger():
         
         sid = await sm.create_session()
         
-        # Criar pequenas entradas (10 tokens cada)
+        # Criar pequenas entradas via add_history (vai para history!)
+        # Cada entrada ~10 tokens (10 chars)
         for i in range(2):
             await sm.add_history("step", {"text": "tokenized"}, sid)
         
-        print(f"✓ 2 entradas criadas (20 tokens)")
+        # Verificar history manualmente
+        state = sm._sessions[sid]
+        print(f"✓ 2 entradas em history: {len(state.history)}")
         
         # Adicionar entrada massiva (200 tokens > 30% limit)
+        # O trigger deve avaliar HISTORY + CONTEXT + ENTRY
         await sm.add_history("massive", {"data": "x" * 200}, sid)
         
         # Verificar que compressão ocorreu
@@ -256,9 +260,48 @@ async def test_proactive_compression_trigger():
         method = await sm.get_context("_compression_method", sid)
         print(f"✓ Compressão proativa: {compressed}, método: {method}")
         
+        # Verificar que history foi truncado
+        print(f"✓ History: {len(state.history)} entradas (deve ser < 4)")
+        
         await sm.shutdown()
         
         print("✓ Proactive Trigger OK")
+
+
+async def test_history_token_calculation():
+    """Teste 8: Cálculo de Tokens Inclui History"""
+    print("\n=== Teste 8: History Token Calculation ===")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Fallback tokenizer
+        sm = SessionManager(
+            state_dir=tmpdir,
+            token_limit=50,
+            compress_threshold=0.5
+        )
+        
+        sid = await sm.create_session()
+        
+        # Adicionar entradas pequenas (10 chars cada = ~2.5 tokens com fallback)
+        for i in range(5):
+            await sm.add_history("msg", {"text": "1234567890"}, sid)
+        
+        # history = 5 * 10 = 50 chars = ~12.5 tokens
+        # context = ~20 chars = ~5 tokens
+        # total = 12.5 + 5 = 17.5 tokens < 25 (50%)
+        
+        # Agora adicionar muito mais (200 chars = ~50 tokens)
+        # total projetado = 17.5 + 50 = 67.5 > 25 (50%)
+        await sm.add_history("big", {"data": "x" * 200}, sid)
+        
+        # Deve ter comprimido
+        compressed = await sm.get_context("_compressed", sid)
+        method = await sm.get_context("_compression_method", sid)
+        print(f"✓ Compressão disparada: {compressed}, {method}")
+        
+        await sm.shutdown()
+        
+        print("✓ History Token Calculation OK")
 
 
 async def test_fail_fast_runtime():
