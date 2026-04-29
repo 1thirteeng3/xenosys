@@ -372,40 +372,7 @@ class SessionManager:
             return self._tokenizer(text)
         return len(text.encode()) // 4  # Fallback bytes/4
     
-    async def _compress_context_internal(self, state: SessionState) -> bool:
-        """
-        Compressão interna para uso em add_history.
-        
-        Versão light: não obtém lock (chamador deve ter lock).
-        Usa slicing O(1) ao invés de set() O(N).
-        """
-        if not state.history:
-            return False
-        
-        total = len(state.history)
-        pinned_head = max(1, total // 10)  # 10% - PINNED
-        pinned_tail = max(1, total // 5)   # 20% - PINNED
-        
-        # --- CORREÇÃO: Slicing O(1) ao invés de set() O(N) ---
-        head = state.history[:pinned_head]
-        tail = state.history[-pinned_tail:] if pinned_tail > 0 else []
-        new_history = head + tail
-        
-        state.history = new_history
-        # --- CORREÇÃO Round 5: Recalcular contador APÓS compressão ---
-        state.history_token_count = sum(
-            self._estimate_tokens(str(h)) for h in new_history
-        ) if new_history else 0
-        
-        state.context["_compressed"] = True
-        state.context["_compression_method"] = "middle-out"
-        state.context["_history_truncated"] = len(new_history)
-        
-        logger.info(
-            f"Compressão proativa: {total}→{len(new_history)} "
-            f"(head={pinned_head}, tail={pinned_tail})"
-        )
-        return True
+    # --- Compressão Pública (Única Fonte) ---
     
     async def compress_context(
         self,
@@ -660,7 +627,9 @@ class SessionManager:
                     f"history={history_tokens} + context={context_tokens} + "
                     f"new={new_entry_tokens} > {self.token_limit * 0.8}"
                 )
-                await self._compress_context_internal(state)
+                # --- CORREÇÃO Round 7: Unificar compressão ---
+                # Usar compress_context via session_id (única fonte)
+                await self.compress_context(sid)
             
             # Inserir APÓS compressão
             state.history.append(entry)
