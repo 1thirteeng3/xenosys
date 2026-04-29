@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -84,28 +84,30 @@ class SessionManager:
         token_limit: int = DEFAULT_TOKEN_LIMIT,
         compress_threshold: float = DEFAULT_COMPRESSION_THRESHOLD,
         state_dir: str = STATE_DIR,
-        auto_restore: bool = True
+        auto_restore: bool = True,
+        tokenizer: Optional[Callable[[str], int]] = None  # Injetável (Q3 → Q4)
     ):
         self.checkpoint_interval = checkpoint_interval
         self.token_limit = token_limit
         self.compress_threshold = compress_threshold
         self.state_dir = state_dir
         self.auto_restore = auto_restore
+        self._tokenizer = tokenizer  # Injeção de dependência
         
         self._sessions: Dict[str, SessionState] = {}
         self._active_session: Optional[str] = None
         self._checkpoint_tasks: Dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
-        self._compression_executor = ThreadPoolExecutor(max_workers=1)
         
-        # Criar diretório de state
+        # Criar diretório de state (dinâmico via config)
         os.makedirs(state_dir, exist_ok=True)
         
         logger.info(
             f"SessionManager inicializado: "
             f"checkpoint={checkpoint_interval}s, "
             f"token_limit={token_limit}, "
-            f"state_dir={state_dir}"
+            f"state_dir={state_dir}, "
+            f"tokenizer={'injected' if tokenizer else 'heuristic'}"
         )
     
     # --- Criação de Sessão ---
@@ -335,32 +337,66 @@ class SessionManager:
         self,
         session_id: Optional[str] = None
     ) -> bool:
-        """Comprime contexto quando > threshold."""
+        """
+        Comprime contexto quando > threshold usando Middle-Out Truncation.
+        
+        CRÍTICO: Protege as primeiras mensagens (System Prompt + User Goal).
+        Mantém as últimas mensagens (contexto imediato).
+        Descarta apenas as intermediárias (tentativas do meio).
+        
+        Middle-Out:
+        - [0:N] = PINNED (System Prompt, Goals) - NUNCA/delete
+        - [N:M] = DISCARDABLE (tentativas, loops)
+        - [M:] = ACTIVE (contexto recente) - PINNED
+        """
         sid = session_id or self._active_session
         if not sid or sid not in self._sessions:
             return False
         
         state = self._sessions[sid]
         
-        # Estimar tokens
+        # --- CORREÇÃO 3: Usar tokenizer injetado ou fallback com alerta ---
         context_str = str(state.context)
-        estimated_tokens = len(context_str) // 4
+        if self._tokenizer:
+            estimated_tokens = self._tokenizer(context_str)
+            token_method = "injected"
+        else:
+            estimated_tokens = len(context_str.encode()) // 4  # bytes → tokens
+            token_method = "heuristic"
+            logger.warning(
+                f"Tokenização precisa indisponível. "
+                f"Utilizando heurística de bytes (risk: context overflow). "
+                f" Injete um tokenizer via SessionManager(tokenizer=...)"
+            )
         
         if estimated_tokens < self.token_limit * self.compress_threshold:
             return False
         
-        # Comprimir histórico
-        if state.history and HAS_LZ4:
-            # Manter último 20%
-            keep_count = max(1, len(state.history) // 5)
-            state.history = state.history[-keep_count:]
-            state.context["_compressed"] = True
-            state.context["_history_truncated"] = len(state.history)
-            
-            logger.info(f"Contexto comprimido: {keep_count} itens mantidos")
-            return True
+        if not state.history:
+            return False
         
-        return False
+        # --- CORREÇÃO 1: Middle-Out Truncation ---
+        total = len(state.history)
+        pinned_head = max(1, total // 10)  # Primeiro 10% - PINNED (System + Goals)
+        pinned_tail = max(1, total // 5)   # Último 20% - PINNED (contexto recente)
+        pinned_middle = pinned_head + pinned_tail
+        
+        pinned_indices = set(range(pinned_head)) | set(range(total - pinned_tail, total))
+        
+        # Criar novo histórico: apenas entradas pinneadas e intermediárias
+        new_history = [state.history[i] for i in range(total) if i in pinned_indices]
+        
+        state.history = new_history
+        state.context["_compressed"] = True
+        state.context["_compression_method"] = "middle-out"
+        state.context["_history_truncated"] = len(new_history)
+        state.context["_token_method"] = token_method
+        
+        logger.info(
+            f"Contexto comprimido: {total}→{len(new_history)} entradas "
+            f"(pinned head={pinned_head}, tail={pinned_tail}, method={token_method})"
+        )
+        return True
     
     # --- Checkpoint ---
     
@@ -545,9 +581,6 @@ class SessionManager:
         # Escrever checkpoints finais
         for sid in list(self._sessions.keys()):
             await self.close_session(sid)
-        
-        # Cleanup executor
-        self._compression_executor.shutdown(wait=True)
         
         logger.info("Shutdown completo")
     

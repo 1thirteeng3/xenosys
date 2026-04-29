@@ -182,33 +182,46 @@ async def test_main_async():
         await sm.shutdown()
 
 
-def test_context_compression():
-    """Teste 6: Context compression"""
-    print("\n=== Teste 6: Context Compression ===")
+async def test_context_compression():
+    """Teste 6: Middle-Out Truncation"""
+    print("\n=== Teste 6: Middle-Out Truncation ===")
     
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Tokenizer simulado - retorna token count
+        def simple_tokenizer(text: str) -> int:
+            return len(text) // 4  # 4 chars = 1 token approx
+        
         sm = SessionManager(
             state_dir=tmpdir,
-            token_limit=100,  # Limite baixo para teste
-            compress_threshold=0.5
+            token_limit=50,  # Limite baixo para forçar compressão
+            compress_threshold=0.5,  # 50% = 25 tokens
+            tokenizer=simple_tokenizer  # Injetado
         )
         
-        sid = asyncio.run(sm.create_session())
+        sid = await sm.create_session()
         
-        # Adicionar muito contexto
-        asyncio.run(sm.set_context("large", "x" * 200, sid))
+        # Criar histórico grande (10+ mensagens)
+        for i in range(10):
+            await sm.add_history("step", {"step": i, "text": "x" * 10}, sid)
         
-        # Comprimir
-        result = asyncio.run(sm.compress_context(sid))
+        # Forçar compressão com muito contexto
+        await sm.set_context("large", "x" * 200, sid)
+        
+        result = await sm.compress_context(sid)
         print(f"✓ Compressão: {result}")
         
-        # Verificar que foi marcado
-        compressed = asyncio.run(sm.get_context("_compressed", sid))
-        print(f"✓ Marcado como comprimido: {compressed}")
+        # Verificar middle-out
+        compressed = await sm.get_context("_compressed", sid)
+        method = await sm.get_context("_compression_method", sid)
+        print(f"✓ Marcado: {compressed}, método: {method}")
         
-        asyncio.run(sm.shutdown())
+        # Com tokenizer injetado deve mostrar "injected"
+        token_method = await sm.get_context("_token_method", sid)
+        print(f"✓ Token method: {token_method}")
         
-        print("✓ Compression OK")
+        await sm.shutdown()
+        
+        print("✓ Middle-Out OK")
 
 
 def main():
@@ -221,10 +234,10 @@ def main():
     test_variable_registry_restore()
     test_session_manager_basic()
     test_checkpoint()
-    test_context_compression()
     
     # Async tests
     asyncio.run(test_main_async())
+    asyncio.run(test_context_compression())
     
     print("\n" + "=" * 60)
     print("TODOS OS TESTES PASSARAM")

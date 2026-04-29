@@ -1,30 +1,31 @@
 # Q4: Stateful Memory System - Memória Persistente
 
-## A. Registro de Raciocínio Técnico (Chain of Thought)
+## Correções Aplicadas (Round 2)
 
-### Trade-offs
+### 1. Middle-Out Truncation
+O sistema agora protege as primeiras mensagens (System Prompt + User Goal):
+- Primeiro 10% = PINNED (nunca deletado)
+- Último 20% = PINNED (contexto recente)
+- Meio = DISCARDABLE (tentativas de loops)
 
-1. **msgpack vs pickle**: msgpack é seguro (não executa código arbitrário), mas não suporta objetos arbitrários Python. Pickle é vetado por segurança.
+### 2. Tokenizer Injection
+O SessionManager agora aceita um tokenizer injetável:
+```python
+SessionManager(tokenizer=lambda text: len(text.encode()) // 4)
+```
+Sem tokenizer injetado, usa fallback com alerta explícito.
 
-2. **RAM vs Disk**: Manter state em /tmp (tmpfs) para performance, com checkpoint periódico.
+### 3. ThreadPoolExecutor Removido
+Executor síncrono foi removido para evitar bloqueamento do event loop.
 
-3. **lz4 vs gzip**: lz4 mais rápido (10x) para compressão/descompressão em tempo real.
+---
 
-### Padrões de Projeto
+## A. Padrões de Projeto
 
 1. **Session Pattern**: Uma sessão por contexto, isolada das outras.
 2. **Registry Pattern**: VariableRegistry faz track de todas as variáveis.
 3. **Memento Pattern**: Checkpoint serialization/deserialization.
-4. **Template Method**: SessionManager com hooks para compressão customizável.
-
-### Riscos e Mitigações
-
-| Risco | Mitigação |
-|-------|-----------|
-|pickle vulnerabilities | msgpack only (use_bin_type) |
-| memory leaks | max_variables limit + eviction |
-| state corruption | atomic writes (rename) |
-| race conditions | asyncio.Lock() |
+4. **Dependency Injection**: Tokenizer injetável via construtor.
 
 ---
 
