@@ -453,6 +453,11 @@ class SessionManager:
         tail = state.history[-pinned_tail:]
         state.history = head + tail
         
+        # --- CORREÇÃO Round 6: Recalcular contador APÓS compressão ---
+        state.history_token_count = sum(
+            self._estimate_tokens(str(h)) for h in state.history
+        ) if state.history else 0
+        
         state.context["_compressed"] = True
         state.context["_compression_method"] = "middle-out"
         state.context["_history_truncated"] = len(state.history)
@@ -500,6 +505,8 @@ class SessionManager:
                 "variables": state.variables,
                 "context": state.context,
                 "history": state.history,
+                "history_token_count": state.history_token_count,
+                "context_token_estimate": getattr(state, 'context_token_estimate', 0),
                 "is_active": state.is_active
             }
             
@@ -558,7 +565,9 @@ class SessionManager:
                     variables=unpacked["variables"],
                     context=unpacked["context"],
                     history=unpacked["history"],
-                    is_active=unpacked["is_active"]
+                    is_active=unpacked["is_active"],
+                    history_token_count=unpacked.get("history_token_count", 0),
+                    context_token_estimate=unpacked.get("context_token_estimate", 0)
                 )
                 self._sessions[session_id] = state
             else:
@@ -568,6 +577,8 @@ class SessionManager:
                 state.history = unpacked["history"]
                 state.updated_at = unpacked["updated_at"]
                 state.checkpoint_count = unpacked["checkpoint_count"]
+                state.history_token_count = unpacked.get("history_token_count", 0)
+                state.context_token_estimate = unpacked.get("context_token_estimate", 0)
             
             logger.info(f"Restaurado: {session_id} (checkpoint #{state.checkpoint_count})")
             return True
