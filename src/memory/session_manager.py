@@ -20,6 +20,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+# --- CORREÇÃO Round 5: MemoryOverflowError ---
+class MemoryOverflowError(Exception):
+    """Context exceed capacity - history compression useless."""
+    pass
+
 # Tentar importar lz4 (opcional)
 try:
     import lz4.frame
@@ -70,6 +75,9 @@ class SessionState:
     context: Dict[str, Any] = field(default_factory=dict)
     history: List[Dict[str, Any]] = field(default_factory=list)
     is_active: bool = True
+    # ---CORREÇÃO Round 5: Running Token Count O(1) ---
+    history_token_count: int = 0  # Contador incremental
+    context_token_estimate: int = 0  # Estimativa de context
 
 
 class SessionManager:
@@ -379,6 +387,11 @@ class SessionManager:
         new_history = head + tail
         
         state.history = new_history
+        # --- CORREÇÃO Round 5: Recalcular contador APÓS compressão ---
+        state.history_token_count = sum(
+            self._estimate_tokens(str(h)) for h in new_history
+        ) if new_history else 0
+        
         state.context["_compressed"] = True
         state.context["_compression_method"] = "middle-out"
         state.context["_history_truncated"] = len(new_history)
@@ -599,14 +612,30 @@ class SessionManager:
             # Estimar tokens da nova entrada
             new_entry_tokens = self._estimate_tokens(str(entry))
             
-            # CORREÇÃO: history + context (não só context!)
-            history_str = " ".join(str(h) for h in state.history)
-            history_tokens = self._estimate_tokens(history_str)
-            context_tokens = self._estimate_tokens(str(state.context))
+            # --- CORREÇÃO Round 5: Running Token Count O(1) ---
+            # Se já temos contador, usa O(1). Se não, calcula.
+            if state.history_token_count > 0:
+                history_tokens = state.history_token_count
+            else:
+                history_str = " ".join(str(h) for h in state.history)
+                history_tokens = self._estimate_tokens(history_str)
+            
+            # Estimar context uma única vez
+            if state.context_token_estimate > 0:
+                context_tokens = state.context_token_estimate
+            else:
+                context_tokens = self._estimate_tokens(str(state.context))
+            
             current_tokens = history_tokens + context_tokens
             
-            # Resetar flag de compressão (era True permanentemente)
-            state.context.pop("_compressed", None)
+            # --- CORREÇÃO Round 5: Prevenção de Deadlock ---
+            # Se context já > 90%, compressão de history é inútil
+            context_ratio = context_tokens / self.token_limit
+            if context_ratio >= 0.9:
+                raise MemoryOverflowError(
+                    f"Context={context_tokens}({context_ratio*100:.0f}%) "
+                    f"excede 90% - history compression useless"
+                )
             
             # PROJEÇÃO: se exceder 80%, comprimir ANTES de inserir
             if (current_tokens + new_entry_tokens) > (self.token_limit * self.compress_threshold):
@@ -619,6 +648,10 @@ class SessionManager:
             
             # Inserir APÓS compressão
             state.history.append(entry)
+            
+            # --- CORREÇÃO Round 5: Atualizar contadores O(1) ---
+            state.history_token_count += new_entry_tokens
+            state.context_token_estimate = context_tokens  # Cache
             
             # Manter máximo 1000 entradas
             if len(state.history) > 1000:

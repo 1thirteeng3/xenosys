@@ -11,7 +11,7 @@ import tempfile
 BASEDIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, BASEDIR)
 
-from src.memory.session_manager import SessionManager
+from src.memory.session_manager import SessionManager, MemoryOverflowError
 from src.memory.variable_registry import VariableRegistry
 
 
@@ -304,6 +304,74 @@ async def test_history_token_calculation():
         print("✓ History Token Calculation OK")
 
 
+# --- CORREÇÃO Round 5: QA Tests ---
+
+
+async def test_memory_overflow_error():
+    """Teste 9: MemoryOverflowError quando context > 90%"""
+    print("\n=== Teste 9: MemoryOverflowError Prevention ===")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sm = SessionManager(
+            state_dir=tmpdir,
+            token_limit=100,
+            compress_threshold=0.8
+        )
+        
+        sid = await sm.create_session()
+        state = sm._sessions[sid]
+        
+        # Preencher context com 95% do token limit
+        # 95 tokens = 95% de 100
+        state.context = {"data": "x" * 380}  # ~95 tokens
+        state.context_token_estimate = 95
+        
+        # Tentar adicionar - deve levantar MemoryOverflowError
+        try:
+            await sm.add_history("msg", {"text": "test"}, sid)
+            print("✗ ERRO: Deveria ter levantado MemoryOverflowError!")
+            assert False, "Deveria ter falhado"
+        except MemoryOverflowError as e:
+            print(f"✓ MemoryOverflowError levantada: {e}")
+        
+        await sm.shutdown()
+        
+        print("✓ MemoryOverflowError Prevention OK")
+
+
+async def test_token_counter_o1():
+    """Teste 10: Running Token Count O(1)"""
+    print("\n=== Teste 10: Token Counter O(1) ===")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def simple_tokenizer(text: str) -> int:
+            return len(text)  # 1 char = 1 token
+        
+        sm = SessionManager(
+            state_dir=tmpdir,
+            token_limit=1000,
+            tokenizer=simple_tokenizer
+        )
+        
+        sid = await sm.create_session()
+        
+        # Adicionar 3 entradas de ~10 tokens cada
+        for i in range(3):
+            await sm.add_history("msg", {"text": "1234567890"}, sid)
+        
+        # Token counter deve incluir toda a entrada, não só data
+        # entry = {"timestamp": "...", "action": "msg", "text": "1234567890"} ~ 88 chars
+        state = sm._sessions[sid]
+        print(f"✓ history_token_count: {state.history_token_count}")
+        
+        # Verificar que contador foi atualizado (não 0)
+        assert state.history_token_count > 0, f"Counter should be > 0, got {state.history_token_count}"
+        
+        await sm.shutdown()
+        
+        print("✓ Token Counter O(1) OK")
+
+
 async def test_fail_fast_runtime():
     """Teste 8: Fail-Fast com msgpack"""
     print("\n=== Teste 8: Fail-Fast Runtime ===")
@@ -356,6 +424,10 @@ def main():
     asyncio.run(test_main_async())
     asyncio.run(test_context_compression())
     asyncio.run(test_proactive_compression_trigger())
+    
+    # --- CORREÇÃO Round 5: QA Tests ---
+    asyncio.run(test_memory_overflow_error())
+    asyncio.run(test_token_counter_o1())
     asyncio.run(test_fail_fast_runtime())
     
     print("\n" + "=" * 60)
