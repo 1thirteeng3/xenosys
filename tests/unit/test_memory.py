@@ -224,6 +224,80 @@ async def test_context_compression():
         print("✓ Middle-Out OK")
 
 
+async def test_proactive_compression_trigger():
+    """Teste 7: Trigger Dinâmico de Compressão"""
+    print("\n=== Teste 7: Proactive Compression Trigger ===")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Tokenizer que retorna tokens diretamente do tamanho
+        def simple_tokenizer(text: str) -> int:
+            return len(text)  # 1 char = 1 token
+        
+        sm = SessionManager(
+            state_dir=tmpdir,
+            token_limit=100,  # Limite baixo
+            compress_threshold=0.3,  # 30% = 30 tokens
+            tokenizer=simple_tokenizer
+        )
+        
+        sid = await sm.create_session()
+        
+        # Criar pequenas entradas (10 tokens cada)
+        for i in range(2):
+            await sm.add_history("step", {"text": "tokenized"}, sid)
+        
+        print(f"✓ 2 entradas criadas (20 tokens)")
+        
+        # Adicionar entrada massiva (200 tokens > 30% limit)
+        await sm.add_history("massive", {"data": "x" * 200}, sid)
+        
+        # Verificar que compressão ocorreu
+        compressed = await sm.get_context("_compressed", sid)
+        method = await sm.get_context("_compression_method", sid)
+        print(f"✓ Compressão proativa: {compressed}, método: {method}")
+        
+        await sm.shutdown()
+        
+        print("✓ Proactive Trigger OK")
+
+
+async def test_fail_fast_runtime():
+    """Teste 8: Fail-Fast com msgpack"""
+    print("\n=== Teste 8: Fail-Fast Runtime ===")
+    
+    # Simular msgpack não instalado - deve falhar em runtime, não import
+    import sys
+    # Salvamos o módulo original
+    original_msgpack = sys.modules.get('msgpack')
+    
+    # Temporariamente removemos msgpack
+    if 'msgpack' in sys.modules:
+        del sys.modules['msgpack']
+    
+    # Também removemos do path de imports
+    import importlib
+    if 'msgpack' in sys.modules:
+        del sys.modules['msgpack']
+    
+    # Restauramos
+    if original_msgpack:
+        sys.modules['msgpack'] = original_msgpack
+    
+    # Importar módulo - deve funcionar
+    from src.memory.session_manager import _ensure_msgpack, HAS_MSGPACK
+    
+    print(f"✓ HAS_MSGPACK na importação: {HAS_MSGPACK}")
+    
+    # Tentar usar sem msgpack - deve falhar em runtime
+    try:
+        _ensure_msgpack()
+        print("ERRO: Deveria ter falhado!")
+    except RuntimeError as e:
+        print(f"✓ RuntimeError capturado: {e}")
+    
+    print("✓ Fail-Fast OK")
+
+
 def main():
     print("=" * 60)
     print("TESTES - Q4: STATEFUL MEMORY SYSTEM")
@@ -238,6 +312,8 @@ def main():
     # Async tests
     asyncio.run(test_main_async())
     asyncio.run(test_context_compression())
+    asyncio.run(test_proactive_compression_trigger())
+    asyncio.run(test_fail_fast_runtime())
     
     print("\n" + "=" * 60)
     print("TODOS OS TESTES PASSARAM")

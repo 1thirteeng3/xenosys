@@ -26,15 +26,30 @@ try:
     HAS_LZ4 = True
 except ImportError:
     HAS_LZ4 = False
-    logger.warning("lz4 não disponível - usando compressão básica")
+    logger.warning("lz4 não disponível - compressão desabilitada")
 
+# --- CORREÇÃO: Lazy Import com Fail-Fast de Runtime ---
 try:
     import msgpack
     HAS_MSGPACK = True
 except ImportError:
+    msgpack = None  # Lazy - não bloqueia importação
     HAS_MSGPACK = False
-    logger.error("msgpack é obrigatório mas não está instalado")
-    raise ImportError("msgpack é obrigatório: pip install msgpack")
+
+
+def _ensure_msgpack():
+    """Fail-Fast: levanta RuntimeError só em runtime, não import."""
+    global msgpack
+    if msgpack is None:
+        try:
+            import msgpack as _mp
+            msgpack = _mp
+        except ImportError:
+            raise RuntimeError(
+                "msgpack é obrigatório para checkpoints. "
+                "Execute: pip install msgpack"
+            )
+    return msgpack
 
 
 # --- Constantes de Configuração ---
@@ -98,6 +113,9 @@ class SessionManager:
         self._active_session: Optional[str] = None
         self._checkpoint_tasks: Dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        
+        # --- CORREÇÃO 2: Per-session locks para atomicidade ---
+        self._session_locks: Dict[str, asyncio.Lock] = {}
         
         # Criar diretório de state (dinâmico via config)
         os.makedirs(state_dir, exist_ok=True)
@@ -333,6 +351,44 @@ class SessionManager:
             return default
         return self._sessions[sid].context.get(key, default)
     
+    # --- Correções de Compressão ---
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """Estima tokens usando tokenizer injetado ou fallback."""
+        if self._tokenizer:
+            return self._tokenizer(text)
+        return len(text.encode()) // 4  # Fallback bytes/4
+    
+    async def _compress_context_internal(self, state: SessionState) -> bool:
+        """
+        Compressão interna para uso em add_history.
+        
+        Versão light: não obtém lock (chamador deve ter lock).
+        Usa slicing O(1) ao invés de set() O(N).
+        """
+        if not state.history:
+            return False
+        
+        total = len(state.history)
+        pinned_head = max(1, total // 10)  # 10% - PINNED
+        pinned_tail = max(1, total // 5)   # 20% - PINNED
+        
+        # --- CORREÇÃO: Slicing O(1) ao invés de set() O(N) ---
+        head = state.history[:pinned_head]
+        tail = state.history[-pinned_tail:] if pinned_tail > 0 else []
+        new_history = head + tail
+        
+        state.history = new_history
+        state.context["_compressed"] = True
+        state.context["_compression_method"] = "middle-out"
+        state.context["_history_truncated"] = len(new_history)
+        
+        logger.info(
+            f"Compressão proativa: {total}→{len(new_history)} "
+            f"(head={pinned_head}, tail={pinned_tail})"
+        )
+        return True
+    
     async def compress_context(
         self,
         session_id: Optional[str] = None
@@ -437,8 +493,9 @@ class SessionManager:
                 "is_active": state.is_active
             }
             
-            # Serializar com msgpack
-            packed = msgpack.packb(data, use_bin_type=True)
+            # Serializar com msgpack via _ensure_msgpack()
+            mp = _ensure_msgpack()
+            packed = mp.packb(data, use_bin_type=True)
             
             # Comprimir com lz4
             if HAS_LZ4:
@@ -477,8 +534,9 @@ class SessionManager:
                 except:
                     pass  # Não estava comprimido
             
-            # Deserializar
-            unpacked = msgpack.unpackb(data, raw=False)
+            # Deserializar com msgpack via _ensure_msgpack()
+            mp = _ensure_msgpack()
+            unpacked = mp.unpackb(data, raw=False)
             
             # Criar/restaurar sessão
             if session_id not in self._sessions:
@@ -516,22 +574,52 @@ class SessionManager:
         data: Dict[str, Any],
         session_id: Optional[str] = None
     ) -> None:
-        """Adiciona entrada ao histórico."""
+        """
+        Adiciona entrada ao histórico com compressão proativa.
+        
+        CRÍTICO: Avalia PROJEÇÃO do estado futuro ANTES de inserir.
+        Se (atual + nova) > 80% token limit, comprime primeiro.
+        
+       _atomic: Usa lock para prevenir race conditions.
+        """
         sid = session_id or self._active_session
         if not sid or sid not in self._sessions:
             return
         
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "action": action,
-            **data
-        }
+        # Obter lock da sessão (cria se não existir)
+        session_lock = self._session_locks.get(sid)
+        if session_lock is None:
+            session_lock = asyncio.Lock()
+            self._session_locks[sid] = session_lock
         
-        self._sessions[sid].history.append(entry)
-        
-        # Manter máximo 1000 entradas
-        if len(self._sessions[sid].history) > 1000:
-            self._sessions[sid].history = self._sessions[sid].history[-1000:]
+        async with session_lock:
+            state = self._sessions[sid]
+            
+            # --- CORREÇÃO 1: Projeção de estado futuro ---
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": action,
+                **data
+            }
+            
+            # Estimar tokens da nova entrada
+            new_entry_tokens = self._estimate_tokens(str(entry))
+            current_tokens = self._estimate_tokens(str(state.context))
+            
+            # PROJEÇÃO: se exceder 80%, comprimir ANTES de inserir
+            if (current_tokens + new_entry_tokens) > (self.token_limit * self.compress_threshold):
+                logger.info(
+                    f"Compressão proativa disparada: "
+                    f"{current_tokens}+{new_entry_tokens} > {self.token_limit * 0.8}"
+                )
+                await self._compress_context_internal(state)
+            
+            # Inserir APÓS compressão
+            state.history.append(entry)
+            
+            # Manter máximo 1000 entradas
+            if len(state.history) > 1000:
+                state.history = state.history[-1000:]
     
     # --- Estatísticas ---
     
