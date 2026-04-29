@@ -372,7 +372,7 @@ class SessionManager:
             return self._tokenizer(text)
         return len(text.encode()) // 4  # Fallback bytes/4
     
-    # --- Compressão Pública (Única Fonte) ---
+    # --- Compressão Pública (com Lock) ---
     
     async def compress_context(
         self,
@@ -381,22 +381,34 @@ class SessionManager:
         """
         Comprime contexto quando > threshold usando Middle-Out Truncation.
         
-        CRÍTICO: Protege as primeiras mensagens (System Prompt + User Goal).
-        Mantém as últimas mensagens (contexto imediato).
-        Descarta apenas as intermediárias (tentativas do meio).
-        
-        Middle-Out:
-        - [0:N] = PINNED (System Prompt, Goals) - NUNCA/delete
-        - [N:M] = DISCARDABLE (tentativas, loops)
-        - [M:] = ACTIVE (contexto recente) - PINNED
+        Versão pública: adquire lock antes de comprimir.
         """
         sid = session_id or self._active_session
         if not sid or sid not in self._sessions:
             return False
         
-        state = self._sessions[sid]
+        # Obter lock da sessão (protege contra chamadas externas)
+        session_lock = self._session_locks.setdefault(sid, asyncio.Lock())
         
-        # --- CORREÇÃO 3: Usar tokenizer injetado ou fallback com alerta ---
+        async with session_lock:
+            state = self._sessions[sid]
+            # Delegar para método interno (sem lock adicional)
+            return await self._compress_context_locked(state, sid)
+    
+    async def _compress_context_locked(
+        self,
+        state: SessionState,
+        session_id: str
+    ) -> bool:
+        """
+        Compressão interna - assumes lock JA obtida pelo chamador.
+        
+        Não adquire lock para evitar deadlock com asyncio.Lock (não-reentrante).
+        """
+        if not state.history:
+            return False
+        
+        # --- Usar tokenizer injetado ou fallback ---
         context_str = str(state.context)
         if self._tokenizer:
             estimated_tokens = self._tokenizer(context_str)
@@ -406,17 +418,14 @@ class SessionManager:
             token_method = "heuristic"
             logger.warning(
                 f"Tokenização precisa indisponível. "
-                f"Utilizando heurística de bytes (risk: context overflow). "
-                f" Injete um tokenizer via SessionManager(tokenizer=...)"
+                f"Utilizando heurística de bytes. "
+                f"Injete um tokenizer via SessionManager(tokenizer=...)"
             )
         
         if estimated_tokens < self.token_limit * self.compress_threshold:
             return False
         
-        if not state.history:
-            return False
-        
-        # --- CORREÇÃO: Middle-Out Truncation com slicing O(1) ---
+        # --- Middle-Out Truncation com slicing O(1) ---
         total = len(state.history)
         pinned_head = max(1, total // 10)  # Primeiro 10% - PINNED
         pinned_tail = max(1, total // 5)   # Último 20% - PINNED
@@ -627,9 +636,8 @@ class SessionManager:
                     f"history={history_tokens} + context={context_tokens} + "
                     f"new={new_entry_tokens} > {self.token_limit * 0.8}"
                 )
-                # --- CORREÇÃO Round 7: Unificar compressão ---
-                # Usar compress_context via session_id (única fonte)
-                await self.compress_context(sid)
+                # --- CORREÇÃO Round 9: Chamar método interno (add_history tem lock) ---
+                await self._compress_context_locked(state, sid)
             
             # Inserir APÓS compressão
             state.history.append(entry)
