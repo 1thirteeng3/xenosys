@@ -43,17 +43,22 @@ except ImportError:
 
 
 def _ensure_msgpack():
-    """Fail-Fast: levanta RuntimeError só em runtime, não import."""
+    """Fail-Fast: levanta RuntimeError se msgpack não disponível."""
     global msgpack
+    
+    # --- CORREÇÃO Round 6: Verificar HAS_MSGPACK PRIMEIRO ---
+    if not HAS_MSGPACK:
+        raise RuntimeError(
+            "msgpack é obrigatório para checkpoints. "
+            "Execute: pip install msgpack"
+        )
+    
+    # Já foi importado com sucesso em tempo de import
     if msgpack is None:
-        try:
-            import msgpack as _mp
-            msgpack = _mp
-        except ImportError:
-            raise RuntimeError(
-                "msgpack é obrigatório para checkpoints. "
-                "Execute: pip install msgpack"
-            )
+        raise RuntimeError(
+            "msgpack falha interna. Execute: pip install msgpack"
+        )
+    
     return msgpack
 
 

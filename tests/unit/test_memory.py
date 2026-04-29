@@ -373,29 +373,34 @@ async def test_token_counter_o1():
 
 
 async def test_fail_fast_runtime():
-    """Teste 8: Fail-Fast com msgpack (Verificação de Import)"""
+    """Teste 8: Fail-Fast com msgpack - Verificação de Error Handling"""
     print("\n=== Teste 8: Fail-Fast Runtime ===")
     
-    # Verificar que HAS_MSGPACK está definido corretamente
-    from src.memory.session_manager import HAS_MSGPACK
+    # Verificar estrutura de fail-fast
+    from src.memory.session_manager import HAS_MSGPACK, _ensure_msgpack
     
-    # O teste verifica se o módulo foi detectado no import
-    # Nota: O teste de isolamento real requer processo separado
+    # Teste 1: Verificar flag correta
+    print(f"✓ HAS_MSGPACK = {HAS_MSGPACK}")
+    
+    # Teste 2: Se disponível, funciona
     if HAS_MSGPACK:
-        print(f"✓ HAS_MSGPACK = True (msgpack disponível)")
-        
-        # Verificar que _ensure_msgpack funciona
-        from src.memory.session_manager import _ensure_msgpack
         mp = _ensure_msgpack()
-        print(f"✓ _ensure_msgpack() retorna: {type(mp).__name__}")
-    else:
-        print(f"⚠ HAS_MSGPACK = False (msgpack não disponível)")
-        from src.memory.session_manager import _ensure_msgpack
+        print(f"✓ _ensure_msgpack() funciona: {type(mp).__name__}")
+        
+        # Teste 3: FORÇAR caminho de erro (verificar que error handling existe)
+        # Simulamos redefinindo HAS_MSGPACK temporariamente
+        import src.memory.session_manager as sm
+        
+        original_flag = sm.HAS_MSGPACK
+        sm.HAS_MSGPACK = False  # Forçar caminho de erro
+        
         try:
-            _ensure_msgpack()
-            print("✗ ERRO: _ensure_msgpack deveria falhar!")
+            _ensure_msgpack()  # Deve falhar agora
+            print("✗ ERRO: Deveria ter falhado!")
         except RuntimeError as e:
-            print(f"✓ RuntimeError capturado: {e}")
+            print(f"✓ RuntimeError forçado: {e}")
+        finally:
+            sm.HAS_MSGPACK = original_flag  # Restaurar
     
     print("✓ Fail-Fast OK")
 
