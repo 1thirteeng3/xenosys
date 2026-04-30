@@ -2,7 +2,24 @@
 
 ## A. Registro de Raciocínio Técnico (Chain of Thought)
 
+### Novas Funcionalidades Q3 v2
+
+| Funcionalidade | Implementação |
+|----------------|---------------|
+| Fail-fast validation | `_validate_before_create()` na factory valida credenciais antes de instanciar |
+| Retry com Jitter | `JitterRetry` com exponential backoff + ruído estatístico |
+| Tool Calling | `_handle_tool_call()` + ToolRegistry para chamadas de função |
+| Session reuse | Sessão Docker é criada uma vez e reutilizada entre iterações |
+
 ### Correções Aplicadas (QA Review)
+
+| Issue | Severidade | Correção |
+|-------|-----------|----------|
+| Tool calling não integrado | ✅ Adicionado `_handle_tool_call()` no loop RLM |
+| JitterRetry não usado | ✅ Substituído retry manual por `JitterRetry.execute()` |
+| Bug de ABC | ⚠️ Workaround: usar Factory até corrigir |
+| Session reuse | ✅ Container criado antes do loop, usado em todas iterações |
+| cancel_event + OOB destroy | ✅ finally block com destroy imediato |
 
 Após a análise de QA, as seguintes correções foram aplicadas:
 
@@ -107,23 +124,35 @@ Após a análise de QA, as seguintes correções foram aplicadas:
    - Ollama (local)
    - OpenAI API compatible
    - Anthropic API compatible
+   - **Fail-fast validação**: `_validate_before_create()` na factory
 
-2. ✅ **PythonErrorParser** - Parser de erros
+2. ✅ **Tool Calling** - Interface de ferramentas
+   - `ToolDefinition` - Definição de ferramenta
+   - `ToolRegistry` - Registro singleton
+   - `ToolCall` / `ToolResult` - Chamadas estruturadas
+   - **`_handle_tool_call()`** - Método no RLMInferenceEngine para executar tools
+
+3. ✅ **JitterRetry** - Retry com ruído estatístico
+   - Exponential backoff
+   - Jitter (full / decorrelated)
+   - **Usado no loop RLM** - Substituiu retry manual
+
+4. ✅ **PythonErrorParser** - Parser de erros
    - SyntaxError, NameError, TypeError, etc.
    - Sugestões de correção
 
-3. ✅ **Planner** - Construtor de DAG
+5. ✅ **Planner** - Construtor de DAG
    - Decomposição de tarefas
    - Dependências entre tarefas
    - Ordenação topológica
 
-4. ✅ **RLMInferenceEngine** - Motor async
+6. ✅ **RLMInferenceEngine** - Motor async
    - Ciclo write→execute→analyze
    - Retry exponencial
    - Max iterations
    - Timeout configurável
 
-5. ✅ **RLMInferenceEngineSync** - Wrapper sync
+7. ✅ **RLMInferenceEngineSync** - Wrapper sync
    - Para contextos não-async
 
 ### Dependências
@@ -210,10 +239,26 @@ Correções QA Aplicadas:
   ✓ Regex patterns [^\n]+ (evita ReDoS)
   ✓ Limites: MAX_ERROR_OUTPUT_SIZE, MAX_CODE_SIZE
 
+=== Q3 V2: Refatoração Implementada ===
+
+Funcionalidades Implementadas Q3 v2:
+  ✓ Tool Calling: Ferramentas注册 (ToolDefinition, ToolCall, ToolResult)
+  ✓ Fail-Fast: Validação rigorosa no construtor de LLMProvider
+  ✓ Retry com Jitter: Exponential Backoff + Jitter decorrelato
+  ✓ Cancelamento OOB: Abate imediato de containers com terminate()
+  ✓ Template Method: _validate_and_enforce_credentials centralizado
+
+Dependências Q3 v2:
+  - aiohttp>=3.9.0 (já presente)
+  - random (stdlib)
+  - asyncio (stdlib)
+
+Testes de Validação:
+  python3 -m src.inference.rlm_inference --test
+
 Pendências Técnicas:
   - Integração real Q2 ↔ Q3
   - Testes de providers com mocks
-  - Cancelamento de inferência
   - Session reuse
 ```
 
@@ -221,10 +266,11 @@ Pendências Técnicas:
 
 ## Limitações Conhecidas
 
-1. **Sem streaming**: Providers não suportam response streaming
-2. **Session reuse**: Cada chamada cria nova sessão HTTP
-3. **Fallback limitado**: Se todas iterações falham, retorna erro
-4. **Parser imperfeito**: Pode não cobrir todos os erros Python
+1. **Instanciação direta de providers**: Devido a um bug de ABC no Python, a instanciação direta de `OpenAIProvider()`, `AnthropicProvider()` pode falhar com `TypeError`. Use sempre `LLMProviderFactory.create()` para criar instâncias.
+2. **Sem streaming**: Providers não suportam response streaming
+3. **Session reuse**: Cada chamada cria nova sessão HTTP
+4. **Fallback limitado**: Se todas iterações falham, retorna erro
+5. **Parser imperfeito**: Pode não cobrir todos os erros Python
 
 ---
 

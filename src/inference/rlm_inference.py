@@ -349,6 +349,55 @@ class InferenceResult:
 # INTERFACE LLM PROVIDER (ABSTRACT FACTORY)
 # =============================================================================
 
+# =============================================================================
+# RETRY COM JITTER - EXPONENTIAL BACKOFF DESACOPLADO
+# =============================================================================
+
+class RetryConfig:
+    def __init__(
+        self,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
+        max_attempts: int = 5,
+        jitter_range: float = 0.5
+    ):
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.max_attempts = max_attempts
+        self.jitter_range = jitter_range
+
+
+class JitterRetry:
+    def __init__(self, config: RetryConfig = None, strategy: str = 'decorrelated'):
+        self.config = config or RetryConfig()
+        self.strategy = strategy
+    
+    def _calculate_delay(self, attempt: int, base_delay: float) -> float:
+        import random
+        exponential_delay = base_delay * (2 ** (attempt - 1))
+        if self.strategy == 'full':
+            jitter = random.uniform(0, exponential_delay)
+        elif self.strategy == 'equal':
+            jitter = (exponential_delay / 2) + random.uniform(0, exponential_delay / 2)
+        else:  # decorrelated
+            jitter = base_delay * random.uniform(0.5, 1.5)
+        return min(jitter, self.config.max_delay)
+    
+    async def execute(self, coro, *args, **kwargs):
+        import asyncio
+        last_error = None
+        for attempt in range(1, self.config.max_attempts + 1):
+            try:
+                return await coro(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt == self.config.max_attempts:
+                    raise
+                delay = self._calculate_delay(self.config.base_delay, attempt)
+                await asyncio.sleep(delay)
+        raise last_error
+
+
 class LLMProvider(ABC):
     """
     Interface abstrata para provedores LLM (Template Method pattern).
@@ -367,6 +416,10 @@ class LLMProvider(ABC):
         max_tokens: Máximo de tokens na resposta
         temperature: Temperatura de Sampling
     """
+    
+    # excessao para credenciais invalidas
+    class InvalidCredentialsError(Exception):
+        pass
     
     def __init__(
         self,
@@ -476,6 +529,39 @@ class LLMProvider(ABC):
         """Retorna endpoint da API."""
         pass
     
+    # =============================================================================
+    # TOOL CALLING - Extrair Chamadas de Ferramentas
+    # =============================================================================
+    
+    def extract_tool_calls(self, response: str) -> List["ToolCall"]:
+        """
+        Extrai chamadas de ferramenta da resposta do LLM.
+        
+        Implementação BASE - usa json.loads() para parsing estruturado.
+        
+        Args:
+            response: Resposta do LLM (JSON string)
+            
+        Returns:
+            Lista de ToolCall extraídas
+        """
+        import json
+        from dataclasses import dataclass
+        
+        @dataclass
+        class ToolCall:
+            id: str
+            name: str
+            arguments: Dict
+        
+        try:
+            data = json.loads(response)
+            if isinstance(data, dict) and 'name' in data:
+                return [ToolCall(id="call_0", name=data.get('name'), arguments=data.get('arguments', {}))]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return []
+    
     @abstractmethod
     async def generate_code(
         self,
@@ -574,7 +660,7 @@ class OpenAIProvider(LLMProvider):
         model: str = "gpt-4",
         **kwargs
     ):
-        """Inicializa provedor OpenAI."""
+        """Inicializa provedor OpenAI com fail-fast."""
         super().__init__(
             provider_type=LLMProviderType.OPENAI,
             model=model,
@@ -583,10 +669,39 @@ class OpenAIProvider(LLMProvider):
         )
         self._session: Optional[aiohttp.ClientSession] = None
         
-        # Obtém API key das variáveis de ambiente
-        self._api_key = os.getenv("OPENAI_API_KEY")
-        if not self._api_key:
-            logger.warning("OPENAI_API_KEY não configurada - chamadas vão falhar")
+        # Fail-Fast: Valida credenciais NO CONSTRUTOR
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise LLMProvider.InvalidCredentialsError(
+                "OPENAI_API_KEY não configurada. Defina a variável de ambiente."
+            )
+        if not api_key.startswith("sk-"):
+            raise LLMProvider.InvalidCredentialsError(
+                f"OPENAI_API_KEY formato inválido. Deve começar com 'sk-'."
+            )
+        if len(api_key) < 20:
+            raise LLMProvider.InvalidCredentialsError(
+                f"OPENAI_API_KEY muito curta ({len(api_key)} chars)."
+            )
+        self._api_key = api_key
+    
+    # Implementação concreta dos métodos abstratos
+    def _get_headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+    
+    def _get_endpoint(self) -> str:
+        return "/chat/completions"
+    
+    def _build_payload(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens)
+        }
+    
+    def _parse_response(self, response: Dict[str, Any]) -> str:
+        return response["choices"][0]["message"]["content"]
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Obtém/reutiliza sessão HTTP."""
