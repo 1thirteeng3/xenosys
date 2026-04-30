@@ -36,3 +36,21 @@ rank-bm25>=0.2.0
 
 # NumPy para cálculos de similaridade
 numpy>=1.24.0
+
+# Q6: Interface Dual e Grafo Epistêmico
+# ===============================
+
+# FastAPI - Servidor web (OBRIGATÓRIO - Fail-Fast sem UI)
+fastapi>=0.100.0
+
+# Uvicorn - ASGI server (OBRIGATÓRIO)
+uvicorn[standard]>=0.25.0
+
+# PyVis - Renderização de grafo (OBRIGATÓRIO)
+pyvis>=0.3.0
+
+# Jinja2 - Templates HTML (OBRIGATÓRIO)
+jinja2>=3.0.0
+
+# python-multipart - FastAPI forms (OBRIGATÓRIO)
+python-multipart>=0.0.6
