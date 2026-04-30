@@ -43,6 +43,7 @@ class RelationType(Enum):
     CONTRADICTS = "CONTRADICTS"
     EXPANDS_ON = "EXPANDS_ON"
     DERIVED_FROM = "DERIVED_FROM"
+    FORCED_OVERRIDE = "FORCED_OVERRIDE"
 
 
 class NetworkSecurityError(Exception):

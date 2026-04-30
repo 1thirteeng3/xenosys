@@ -505,9 +505,20 @@ class LLMProvider(ABC):
         prompt: str,
         system_prompt: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs
     ) -> str:
-        """Gera resposta via Template Method."""
+        """Gera resposta via Template Method.
+        
+        Args:
+            prompt: Prompt do usuário
+            system_prompt: Prompt de sistema (opcional)
+            context: Contexto de iterações anteriores (opcional)
+            tools: Lista de tool definitions para Tool Calling (opcional)
+            tool_choice: Nome da ferramenta forçada (opcional)
+            **kwargs: Parâmetros adicionais
+        """
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -521,7 +532,13 @@ class LLMProvider(ABC):
         
         messages.append({"role": "user", "content": prompt})
         
-        payload = self._build_payload(messages, **kwargs)
+        # Constrói payload com tools (se fornecido)
+        payload = self._build_payload(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs
+        )
         return await self._do_request(self._get_endpoint(), payload)
     
     @abstractmethod
@@ -610,9 +627,11 @@ class OllamaProvider(LLMProvider):
     def _build_payload(
         self,
         messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        return {
+        payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
@@ -621,6 +640,13 @@ class OllamaProvider(LLMProvider):
                 "num_predict": kwargs.get("max_tokens", self.max_tokens),
             }
         }
+        
+        # Adiciona tools se fornecido (Tool Calling)
+        if tools:
+            # Ollama suporta tools via 'tools' no payload
+            payload["tools"] = tools
+        
+        return payload
     
     def _parse_response(self, response: Dict[str, Any]) -> str:
         return response["message"]["content"]

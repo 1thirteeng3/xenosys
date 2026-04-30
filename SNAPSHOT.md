@@ -1,7 +1,7 @@
 SNAPSHOT DE ESTADO:
 ====================
-Versão do Projeto: v1.0.7 (Q7 - Security Policing)
-Componentes Prontos: [Q0, Q1, Q2, Q3, Q4, Q5, Q6, Q7]
+Versão do Projeto: v1.0.8 (Q8 - Contradiction Engine)
+Componentes Prontos: [Q0, Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8]
 Dependências Instaladas: 
   - docker>=7.0.0
   - python-dotenv>=1.0.0
@@ -13,6 +13,6 @@ Dependências Instaladas:
   - sentence-transformers>=2.2.0
   - rank-bm25>=0.2.0
   - numpy>=1.24.0
-  - psutil>=5.9.0 (NOVO)
-Pendências Técnicas: [Servidor web requer FastAPI para UI completa - PyVis opcional]
+  - psutil>=5.9.0
+Pendências Técnicas: [Integração com Q3 e Q6 para loop completo]
 ---
