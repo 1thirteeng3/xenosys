@@ -1,3 +1,6 @@
+# Core Dependencies
+# =================
+
 # Docker SDK for Python
 # Used for Docker API interactions without subprocess calls
 docker>=7.0.0
@@ -7,5 +10,29 @@ docker>=7.0.0
 python-dotenv>=1.0.0
 
 # Async HTTP client for LLM API calls
-aiohttp>=3.9.0msgpack>=1.0.0
+aiohttp>=3.9.0
+
+# Q4/Q5: Serialização e Compressão
+# msgpack: Serialização segura (não pickle)
+msgpack>=1.0.0
+
+# lz4: Compressão rápida
 lz4>=4.0.0
+
+# Q5: Cortex - Banco de Grafos Híbrido
+# ===============================
+
+# PDF parsing
+PyPDF2>=3.0.0
+
+# Data handling
+pandas>=2.0.0
+
+# Sentence embeddings (offline mode)
+sentence-transformers>=2.2.0
+
+# BM25 ranking algorithm
+rank-bm25>=0.2.0
+
+# NumPy para cálculos de similaridade
+numpy>=1.24.0
