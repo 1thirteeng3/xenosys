@@ -60,6 +60,13 @@ from core.logging import JSONFormatter, setup_logger
 from core.models import ExecutionResult, ContainerSession
 from core.hooks import LifecycleHooks
 
+# Q7 - Security Policing (INTEGRAÇÃO OBRIGATÓRIA)
+from .security_policing import (
+    SecurityPolicing,
+    SecurityConfig,
+    ContainerSecurityViolationError,
+)
+
 # Logger compartilhado
 logger = setup_logger("container_manager")
 
@@ -222,13 +229,25 @@ class ContainerManager:
         # Thread pool para operações bloqueantes
         self._thread_pool = ThreadPoolExecutor(max_workers=10)
         
+        # Q7 - Security Policing (INTEGRAÇÃO OBRIGATÓRIA)
+        # Esta configuração é IMPOSTA a TODOS os containers
+        self._security_config = SecurityConfig(
+            pids_limit=64,
+            oom_score_adj=1000,
+            read_only_rootfs=True,
+            tmpfs_tmp="100m",
+            tmpfs_run="50m",
+        )
+        self._security_policing = SecurityPolicing(self._security_config)
+        
         logger.info(
             "ContainerManager inicializado",
             extra={"extra_data": {
                 "pool_size": pool_size,
                 "memory_limit": memory_limit,
                 "cpu_limit": cpu_limit,
-                "base_image": base_image
+                "base_image": base_image,
+                "security_policing": "enabled"
             }}
         )
     
@@ -442,14 +461,24 @@ class ContainerManager:
             version = client.version()
             api_version = version.get("Version", "1.41")
             
-            host_config = HostConfig(
-                api_version,
-                mem_limit=self._memory_limit,
-                cpu_period=100000,
-                cpu_quota=int(self._cpu_limit * 100000),
-                network_mode="none",         # Rede desabilitada por segurança
-                auto_remove=True
-            )
+            # =============================================================================
+            # Q7 - SECURITY POLICING INTEGRATION (OBRIGATÓRIA)
+            # =============================================================================
+            # Obtém kwargs de segurança do Q7
+            security_kwargs = self._security_policing.get_security_host_config_kwargs()
+            
+            # Merge com configurações do Q1
+            security_kwargs.update({
+                "api_version": api_version,
+                "mem_limit": self._memory_limit,
+                "cpu_period": 100000,
+                "cpu_quota": int(self._cpu_limit * 100000),
+                "network_mode": "none",         # Rede desabilitada por segurança
+                "auto_remove": True,
+            })
+            
+            # CRÍTICO: Cria HostConfig com políticas de segurança
+            host_config = HostConfig(**security_kwargs)
             
             # Cria container interativo (-it) com restrições de recursos
             container = client.create_container(
@@ -460,11 +489,66 @@ class ContainerManager:
                 name=name
             )
             
-            session.container_id = container["Id"]
+            container_id = container["Id"]
+            
+            # =============================================================================
+            # Q7 - VERIFICAÇÃO PÓS-CRIAÇÃO (OBRIGATÓRIA)
+            # =============================================================================
+            # CRÍTICO: Verifica se políticas foram aplicadas
+            # Diferencia falhas de SEGURANÇA de falhas operacionais
+            try:
+                secure = await self._security_policing.verify_container(container_id)
+            except ContainerSecurityViolationError as e:
+                # VIOLAÇÃO DE SEGURANÇA - erro fatal, não tentar Retry
+                logger.critical(
+                    f"Falha de segurança na verificação - container {container_id[:12]} ABATIDO",
+                    extra={"extra_data": {
+                        "container_id": container_id[:12],
+                        "error": str(e),
+                        "type": "security_violation"
+                    }}
+                )
+                # Não faz cleanup aqui - Q7 já abateu
+                raise
+            except DockerException as e:
+                # FALHA OPERACIONAL (rede, API) - considera Hostil por precaução
+                logger.critical(
+                    f"Falha operacional ao verificar container {container_id[:12]} ABATENDO por seguranca",
+                    extra={"extra_data": {
+                        "container_id": container_id[:12],
+                        "error": str(e),
+                        "type": "operational_failure"
+                    }}
+                )
+                try:
+                    client.kill(container_id)
+                    client.remove_container(container_id, force=True)
+                except:
+                    pass
+                raise ContainerSecurityViolationError(
+                    f"Falha operacional na verificação: {e}"
+                )
+            
+            if not secure:
+                # VIOLAÇÃO - ABATE IMEDIATO
+                logger.critical(
+                    f"Container {container_id[:12]} violou políticas de segurança - ABATENDO",
+                    extra={"extra_data": {"container_id": container_id[:12]}}
+                )
+                try:
+                    client.kill(container_id)
+                    client.remove_container(container_id, force=True)
+                except:
+                    pass
+                raise ContainerSecurityViolationError(
+                    f"Container {container_id[:12]} violou políticas de segurança"
+                )
+            
+            session.container_id = container_id
             session.status = "ready"
             
             # Inicia container (sempre modo interativo -it)
-            client.start(container["Id"])
+            client.start(container_id)
             
             logger.info(
                 f"Container criado: {session.container_id[:12]}",

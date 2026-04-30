@@ -52,6 +52,22 @@ from .docker_repl_engine import (
     IsolationLevel,
 )
 
+# Q7 - Security Policing (NOVO)
+from .security_policing import (
+    SecurityPolicing,
+    SecurityPolicingSync,
+    SecurityConfig,
+    SecurityConfigInvalidError,
+    RootDaemonDetectedError,
+    ContainerSecurityViolationError,
+    BatteryManager,
+    BatteryStatus,
+    SecurityAudit,
+    SecurityValidator,
+    BatteryState,
+    SecurityLevel,
+)
+
 __all__ = [
     # Core compartilhado
     "ExecutionResult",
@@ -77,4 +93,17 @@ __all__ = [
     "ContainmentConfig",
     "LifecycleHooks",
     "IsolationLevel",
+    # Security Policing (Q7)
+    "SecurityPolicing",
+    "SecurityPolicingSync",
+    "SecurityConfig",
+    "SecurityConfigInvalidError",
+    "RootDaemonDetectedError",
+    "ContainerSecurityViolationError",
+    "BatteryManager",
+    "BatteryStatus",
+    "SecurityAudit",
+    "SecurityValidator",
+    "BatteryState",
+    "SecurityLevel",
 ]

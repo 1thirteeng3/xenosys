@@ -54,3 +54,8 @@ jinja2>=3.0.0
 
 # python-multipart - FastAPI forms (OBRIGATÓRIO)
 python-multipart>=0.0.6
+
+# Q7: Security Policing (NOVO)
+# ===============================
+# psutil: Monitoramento de bateria e recursos do sistema
+psutil>=5.9.0
